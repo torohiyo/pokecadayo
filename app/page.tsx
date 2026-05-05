@@ -176,6 +176,9 @@ export default function Home() {
   const [deckViewerOpen, setDeckViewerOpen] = useState(false);
   const [drawCount, setDrawCount] = useState(1);
 
+  // deck-viewer inline probability mode
+  const [dvProb, setDvProb] = useState<{ targetIds: string[]; steps: ProbStep[] } | null>(null);
+
   // probability panel
   const [probOpen, setProbOpen] = useState(false);
   const [targetIds, setTargetIds] = useState<string[]>([]);
@@ -184,6 +187,45 @@ export default function Home() {
 
   const cardMap = useMemo(() => new Map(deckCards.map((c) => [c.id, c])), [deckCards]);
   const deckOrderMap = useMemo(() => new Map(deckCards.map((c, i) => [c.id, i])), [deckCards]);
+
+  // deck-viewer probability calculations
+  const dvTargetCounts = useMemo(
+    () => (dvProb?.targetIds ?? []).map((id) => board.deck.filter((c) => c.cardId === id).length),
+    [dvProb?.targetIds, board.deck]
+  );
+  const dvProbability = useMemo(() => {
+    if (!dvProb || dvProb.steps.length === 0 || dvProb.targetIds.length === 0) return null;
+    return calculateProbability({
+      deckSize: board.deck.length,
+      handSize: board.hand.length,
+      targetCounts: dvTargetCounts,
+      steps: dvProb.steps,
+      effects: DEFAULT_EFFECTS,
+    });
+  }, [dvProb, dvTargetCounts, board.deck.length, board.hand.length]);
+
+  const handleDvDoubleClick = useCallback((cardId: string) => {
+    setDvProb((prev) => {
+      const base = prev ?? { targetIds: [], steps: [] };
+      if (base.targetIds.includes(cardId)) {
+        // deselect
+        return { ...base, targetIds: base.targetIds.filter((id) => id !== cardId) };
+      }
+      if (base.targetIds.length >= 3) {
+        return { ...base, targetIds: [...base.targetIds.slice(1), cardId] };
+      }
+      return { ...base, targetIds: [...base.targetIds, cardId] };
+    });
+  }, []);
+
+  const addDvStep = useCallback((effectKey: string) => {
+    const effect = DEFAULT_EFFECTS.find((e) => e.key === effectKey);
+    if (!effect) return;
+    setDvProb((prev) => {
+      if (!prev) return prev;
+      return { ...prev, steps: [...prev.steps, { id: ++stepIdRef.current, effectKey, compress: effect.compress }] };
+    });
+  }, []);
 
   // ── Load ────────────────────────────────────────────────────────────────────
 
@@ -523,48 +565,186 @@ export default function Home() {
 
         {/* ── Deck Viewer ── */}
         {deckViewerOpen && (
-          <div className="bg-gray-950 rounded-xl border border-gray-700 p-3">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-bold">山札 ({board.deck.length}枚)</span>
-                {deckCards.length > 0 && (
-                  <button
-                    onClick={() => sortZone("deck")}
-                    className="text-[9px] text-white/50 hover:text-white border border-white/20 hover:border-white/40 rounded px-1.5 py-0.5 transition-colors"
-                  >
-                    デッキ順に並び替え
-                  </button>
-                )}
+          <div className="bg-gray-950 rounded-xl border border-gray-700 overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800">
+              <span className="text-sm font-bold">山札 ({board.deck.length}枚)</span>
+              {deckCards.length > 0 && (
                 <button
-                  onClick={shuffleDeck}
+                  onClick={() => sortZone("deck")}
                   className="text-[9px] text-white/50 hover:text-white border border-white/20 hover:border-white/40 rounded px-1.5 py-0.5 transition-colors"
                 >
-                  シャッフル
+                  デッキ順
                 </button>
-              </div>
+              )}
+              <button
+                onClick={shuffleDeck}
+                className="text-[9px] text-white/50 hover:text-white border border-white/20 hover:border-white/40 rounded px-1.5 py-0.5 transition-colors"
+              >
+                シャッフル
+              </button>
+              <div className="flex-1" />
+              <span className="text-[9px] text-white/30">ダブルクリックで確率計算</span>
               <button
                 onClick={() => setDeckViewerOpen(false)}
-                className="text-gray-500 hover:text-white text-lg leading-none"
+                className="text-gray-500 hover:text-white text-lg leading-none ml-1"
               >
                 ×
               </button>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {board.deck.map((c, i) => (
-                <div key={c.instanceId} className="flex flex-col items-center gap-0.5">
-                  <Card
-                    card={{ ...c, faceDown: false }}
-                    size="sm"
-                    zone="deck"
-                    isDragging={dragging?.instanceId === c.instanceId}
-                    {...sharedCardProps}
-                  />
-                  <span className="text-[8px] text-gray-600">{board.deck.length - i}</span>
+
+            {/* ── Inline probability bar ── */}
+            {dvProb && (
+              <div className="bg-gray-900 border-b border-gray-800 px-3 py-2.5 flex flex-col gap-2">
+                {/* Row 1: targets + result + clear */}
+                <div className="flex items-center gap-3">
+                  <span className="text-yellow-400 text-sm shrink-0">🎯</span>
+
+                  {/* Target cards */}
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    {dvProb.targetIds.length === 0 ? (
+                      <span className="text-xs text-gray-500 italic">カードをダブルクリックして選択</span>
+                    ) : (
+                      dvProb.targetIds.map((id, i) => {
+                        const card = deckCards.find((c) => c.id === id);
+                        const inDeck = dvTargetCounts[i] ?? 0;
+                        return (
+                          <div
+                            key={id}
+                            className="flex items-center gap-1 bg-yellow-900/30 border border-yellow-700/50 rounded px-1.5 py-0.5 cursor-pointer hover:bg-yellow-900/50"
+                            onClick={() => handleDvDoubleClick(id)}
+                            title="クリックで解除"
+                          >
+                            {card?.imageUrl && (
+                              <img src={card.imageUrl} className="w-6 h-8 object-cover rounded shrink-0" />
+                            )}
+                            <div>
+                              <div className="text-[10px] text-yellow-200 leading-tight max-w-[80px] truncate">{card?.name}</div>
+                              <div className="text-[10px] text-blue-400">山 {inDeck}枚</div>
+                            </div>
+                            <span className="text-[8px] font-bold text-yellow-500 ml-0.5">{String.fromCharCode(65 + i)}</span>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* Probability result */}
+                  <div className="shrink-0 text-right">
+                    {dvProb.steps.length > 0 && dvProb.targetIds.length > 0 ? (
+                      <div
+                        className={`text-3xl font-bold tabular-nums leading-none ${
+                          dvProbability === null ? "text-gray-600"
+                            : dvProbability >= 0.8 ? "text-green-400"
+                            : dvProbability >= 0.5 ? "text-yellow-400"
+                            : "text-red-400"
+                        }`}
+                      >
+                        {dvProbability === null ? "—" : formatPct(dvProbability)}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-gray-600">効果を選択→</span>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={() => setDvProb(null)}
+                    className="text-gray-600 hover:text-white text-lg leading-none shrink-0"
+                    title="確率モード終了"
+                  >
+                    ×
+                  </button>
                 </div>
-              ))}
-              {board.deck.length === 0 && (
-                <p className="text-gray-600 text-sm">山札にカードがありません</p>
-              )}
+
+                {/* Row 2: effect buttons */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                  {DEFAULT_EFFECTS.map((effect) => (
+                    <button
+                      key={effect.key}
+                      onClick={() => addDvStep(effect.key)}
+                      title={`${effect.label} — ${effect.description}`}
+                      className="shrink-0 rounded overflow-hidden border-2 border-transparent hover:border-red-500 active:scale-95 transition-all"
+                      style={{ width: 40, height: 56 }}
+                    >
+                      {effect.imageUrl ? (
+                        <img src={effect.imageUrl} alt={effect.label} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full bg-gray-700 flex items-center justify-center text-[9px] text-gray-400">
+                          {effect.short}
+                        </div>
+                      )}
+                    </button>
+                  ))}
+
+                  {/* Steps sequence */}
+                  {dvProb.steps.length > 0 && (
+                    <div className="flex items-center gap-1 ml-2 pl-2 border-l border-gray-700">
+                      {dvProb.steps.map((step, i) => {
+                        const effect = DEFAULT_EFFECTS.find((e) => e.key === step.effectKey);
+                        if (!effect) return null;
+                        return (
+                          <div key={step.id} className="flex items-center gap-0.5">
+                            <span className="text-[8px] text-gray-600">{i + 1}.</span>
+                            {effect.imageUrl ? (
+                              <img src={effect.imageUrl} className="w-7 h-10 object-cover rounded" title={effect.label} />
+                            ) : (
+                              <span className="text-[9px] text-gray-400">{effect.short}</span>
+                            )}
+                            <button
+                              onClick={() =>
+                                setDvProb((p) => p ? { ...p, steps: p.steps.filter((s) => s.id !== step.id) } : p)
+                              }
+                              className="text-gray-700 hover:text-red-400 text-[10px] leading-none -ml-0.5"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        );
+                      })}
+                      <button
+                        onClick={() => setDvProb((p) => p ? { ...p, steps: [] } : p)}
+                        className="text-[9px] text-gray-600 hover:text-gray-400 ml-1"
+                      >
+                        クリア
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Card grid */}
+            <div className="p-3">
+              <div className="flex flex-wrap gap-1.5">
+                {board.deck.map((c, i) => {
+                  const isTarget = dvProb?.targetIds.includes(c.cardId);
+                  return (
+                    <div
+                      key={c.instanceId}
+                      className="flex flex-col items-center gap-0.5"
+                      onDoubleClick={() => handleDvDoubleClick(c.cardId)}
+                    >
+                      <div
+                        className={`rounded-lg transition-all ${
+                          isTarget ? "ring-2 ring-yellow-400 scale-105" : ""
+                        }`}
+                      >
+                        <Card
+                          card={{ ...c, faceDown: false }}
+                          size="sm"
+                          zone="deck"
+                          isDragging={dragging?.instanceId === c.instanceId}
+                          {...sharedCardProps}
+                        />
+                      </div>
+                      <span className="text-[8px] text-gray-600">{board.deck.length - i}</span>
+                    </div>
+                  );
+                })}
+                {board.deck.length === 0 && (
+                  <p className="text-gray-600 text-sm">山札にカードがありません</p>
+                )}
+              </div>
             </div>
           </div>
         )}
