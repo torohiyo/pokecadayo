@@ -177,7 +177,8 @@ export default function Home() {
   const [drawCount, setDrawCount] = useState(1);
 
   // deck-viewer inline probability mode
-  const [dvProb, setDvProb] = useState<{ targetIds: string[]; steps: ProbStep[] } | null>(null);
+  interface DvTarget { cardId: string; minCount: number; }
+  const [dvProb, setDvProb] = useState<{ targets: DvTarget[]; steps: ProbStep[]; condition: "any" | "all" } | null>(null);
 
   // probability panel
   const [probOpen, setProbOpen] = useState(false);
@@ -190,31 +191,44 @@ export default function Home() {
 
   // deck-viewer probability calculations
   const dvTargetCounts = useMemo(
-    () => (dvProb?.targetIds ?? []).map((id) => board.deck.filter((c) => c.cardId === id).length),
-    [dvProb?.targetIds, board.deck]
+    () => (dvProb?.targets ?? []).map((t) => board.deck.filter((c) => c.cardId === t.cardId).length),
+    [dvProb?.targets, board.deck]
+  );
+  const dvMinCounts = useMemo(
+    () => (dvProb?.targets ?? []).map((t) => t.minCount),
+    [dvProb?.targets]
   );
   const dvProbability = useMemo(() => {
-    if (!dvProb || dvProb.steps.length === 0 || dvProb.targetIds.length === 0) return null;
+    if (!dvProb || dvProb.steps.length === 0 || dvProb.targets.length === 0) return null;
     return calculateProbability({
       deckSize: board.deck.length,
       handSize: board.hand.length,
       targetCounts: dvTargetCounts,
       steps: dvProb.steps,
       effects: DEFAULT_EFFECTS,
+      condition: dvProb.condition,
+      minCounts: dvMinCounts,
     });
-  }, [dvProb, dvTargetCounts, board.deck.length, board.hand.length]);
+  }, [dvProb, dvTargetCounts, dvMinCounts, board.deck.length, board.hand.length]);
 
   const handleDvDoubleClick = useCallback((cardId: string) => {
     setDvProb((prev) => {
-      const base = prev ?? { targetIds: [], steps: [] };
-      if (base.targetIds.includes(cardId)) {
-        // deselect
-        return { ...base, targetIds: base.targetIds.filter((id) => id !== cardId) };
+      const base = prev ?? { targets: [], steps: [], condition: "any" as const };
+      if (base.targets.some((t) => t.cardId === cardId)) {
+        return { ...base, targets: base.targets.filter((t) => t.cardId !== cardId) };
       }
-      if (base.targetIds.length >= 3) {
-        return { ...base, targetIds: [...base.targetIds.slice(1), cardId] };
+      const newTarget: DvTarget = { cardId, minCount: 1 };
+      if (base.targets.length >= 3) {
+        return { ...base, targets: [...base.targets.slice(1), newTarget] };
       }
-      return { ...base, targetIds: [...base.targetIds, cardId] };
+      return { ...base, targets: [...base.targets, newTarget] };
+    });
+  }, []);
+
+  const setDvTargetMinCount = useCallback((cardId: string, minCount: number) => {
+    setDvProb((prev) => {
+      if (!prev) return prev;
+      return { ...prev, targets: prev.targets.map((t) => t.cardId === cardId ? { ...t, minCount } : t) };
     });
   }, []);
 
@@ -224,6 +238,79 @@ export default function Home() {
     setDvProb((prev) => {
       if (!prev) return prev;
       return { ...prev, steps: [...prev.steps, { id: ++stepIdRef.current, effectKey, compress: effect.compress }] };
+    });
+  }, []);
+
+  // ── Prizes operations ────────────────────────────────────────────────────────
+
+  const flipAllPrizes = useCallback(() => {
+    setBoard((prev) => ({ ...prev, prizes: prev.prizes.map((c) => ({ ...c, faceDown: false })) }));
+  }, []);
+
+  const takePrizes = useCallback((n: number) => {
+    setBoard((prev) => {
+      const count = Math.min(n, prev.prizes.length);
+      if (count === 0) return prev;
+      const taken = prev.prizes.slice(-count).map((c) => ({ ...c, faceDown: false }));
+      return { ...prev, prizes: prev.prizes.slice(0, -count), hand: [...prev.hand, ...taken] };
+    });
+  }, []);
+
+  const shufflePrizes = useCallback(() => {
+    setBoard((prev) => ({ ...prev, prizes: shuffleArray(prev.prizes) }));
+  }, []);
+
+  // ── Hand draw effects (real actions) ─────────────────────────────────────────
+
+  const performHandEffect = useCallback((effectKey: string) => {
+    setBoard((prev) => {
+      const { deck, hand, trash } = prev;
+      switch (effectKey) {
+        case "hakase": {
+          const n = Math.min(7, deck.length);
+          return { ...prev, trash: [...trash, ...hand.map((c) => ({ ...c, faceDown: false }))], hand: deck.slice(-n).map((c) => ({ ...c, faceDown: false })), deck: deck.slice(0, -n) };
+        }
+        case "lillie_strong": {
+          const nd = shuffleArray([...deck, ...hand.map((c) => ({ ...c, faceDown: true }))]);
+          const n = Math.min(8, nd.length);
+          return { ...prev, deck: nd.slice(0, -n), hand: nd.slice(-n).map((c) => ({ ...c, faceDown: false })) };
+        }
+        case "lillie_weak": {
+          const nd = shuffleArray([...deck, ...hand.map((c) => ({ ...c, faceDown: true }))]);
+          const n = Math.min(6, nd.length);
+          return { ...prev, deck: nd.slice(0, -n), hand: nd.slice(-n).map((c) => ({ ...c, faceDown: false })) };
+        }
+        case "unfair5": {
+          const nd = shuffleArray([...deck, ...hand.map((c) => ({ ...c, faceDown: true }))]);
+          const n = Math.min(5, nd.length);
+          return { ...prev, deck: nd.slice(0, -n), hand: nd.slice(-n).map((c) => ({ ...c, faceDown: false })) };
+        }
+        case "unfair2": {
+          const nd = shuffleArray([...deck, ...hand.map((c) => ({ ...c, faceDown: true }))]);
+          const n = Math.min(2, nd.length);
+          return { ...prev, deck: nd.slice(0, -n), hand: nd.slice(-n).map((c) => ({ ...c, faceDown: false })) };
+        }
+        case "redcard": {
+          // hand goes to bottom of deck, draw 3
+          const nd = [...hand.map((c) => ({ ...c, faceDown: true })), ...deck];
+          const n = Math.min(3, nd.length);
+          return { ...prev, deck: nd.slice(0, -n), hand: nd.slice(-n).map((c) => ({ ...c, faceDown: false })) };
+        }
+        case "sakateni": {
+          const n = Math.min(3, deck.length);
+          return { ...prev, deck: deck.slice(0, -n), hand: [...hand, ...deck.slice(-n).map((c) => ({ ...c, faceDown: false }))] };
+        }
+        case "dash": {
+          const n = Math.min(2, deck.length);
+          return { ...prev, deck: deck.slice(0, -n), hand: [...hand, ...deck.slice(-n).map((c) => ({ ...c, faceDown: false }))] };
+        }
+        case "midori": {
+          const n = Math.min(1, deck.length);
+          return { ...prev, deck: deck.slice(0, -n), hand: [...hand, ...deck.slice(-n).map((c) => ({ ...c, faceDown: false }))] };
+        }
+        default:
+          return prev;
+      }
     });
   }, []);
 
@@ -409,7 +496,7 @@ export default function Home() {
         <div className="flex gap-2 items-stretch">
 
           {/* Prizes 2×3 */}
-          <DropZone {...dropProps("prizes")} className="bg-black/30 rounded-xl border border-white/10 p-2 shrink-0">
+          <DropZone {...dropProps("prizes")} className="bg-black/30 rounded-xl border border-white/10 p-2 shrink-0 flex flex-col">
             <div className="text-[10px] text-white/40 text-center mb-1">サイド ({board.prizes.length})</div>
             <div className="grid grid-cols-2 gap-1">
               {Array.from({ length: 6 }).map((_, i) => {
@@ -421,6 +508,17 @@ export default function Home() {
                 );
               })}
             </div>
+            {board.prizes.length > 0 && (
+              <div className="mt-2 flex flex-col gap-1">
+                <button onClick={flipAllPrizes} className="w-full text-[9px] bg-white/10 hover:bg-white/20 rounded py-1 transition-colors">全表にする</button>
+                <div className="flex gap-1">
+                  {[1, 2, 3].map((n) => (
+                    <button key={n} onClick={() => takePrizes(n)} disabled={board.prizes.length < n} className="flex-1 text-[9px] bg-white/10 hover:bg-white/20 disabled:opacity-30 rounded py-1 transition-colors">{n}枚取る</button>
+                  ))}
+                </div>
+                <button onClick={shufflePrizes} className="w-full text-[9px] bg-white/10 hover:bg-white/20 rounded py-1 transition-colors">シャッフル</button>
+              </div>
+            )}
           </DropZone>
 
           {/* Battle */}
@@ -467,14 +565,30 @@ export default function Home() {
             <div className="flex items-center gap-2 mb-1.5">
               <span className="text-[10px] text-white/40">手札 ({board.hand.length})</span>
               {board.hand.length > 0 && deckCards.length > 0 && (
-                <button
-                  onClick={() => sortZone("hand")}
-                  className="text-[9px] text-white/40 hover:text-white/70 border border-white/20 hover:border-white/40 rounded px-1.5 py-0.5 transition-colors"
-                >
+                <button onClick={() => sortZone("hand")} className="text-[9px] text-white/40 hover:text-white/70 border border-white/20 hover:border-white/40 rounded px-1.5 py-0.5 transition-colors">
                   デッキ順
                 </button>
               )}
             </div>
+            {/* Real draw effect buttons */}
+            {deckCards.length > 0 && (
+              <div className="flex gap-1 overflow-x-auto pb-1.5 mb-1.5 border-b border-white/10">
+                {(["hakase","lillie_strong","lillie_weak","unfair5","unfair2","redcard","sakateni","dash","midori"] as const).map((key) => {
+                  const ef = DEFAULT_EFFECTS.find((e) => e.key === key);
+                  if (!ef) return null;
+                  return (
+                    <button key={key} onClick={() => performHandEffect(key)} title={`${ef.label} — ${ef.description}`}
+                      className="shrink-0 rounded overflow-hidden border-2 border-transparent hover:border-green-400 active:scale-95 transition-all"
+                      style={{ width: 36, height: 50 }}>
+                      {ef.imageUrl
+                        ? <img src={ef.imageUrl} alt={ef.label} className="w-full h-full object-cover" />
+                        : <div className="w-full h-full bg-gray-700 flex items-center justify-center text-[9px]">{ef.short}</div>
+                      }
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <div className="flex gap-1 overflow-x-auto pb-1" style={{ minHeight: 90 }}>
               {board.hand.length > 0 ? (
                 board.hand.map((c) => (
@@ -595,115 +709,110 @@ export default function Home() {
 
             {/* ── Inline probability bar ── */}
             {dvProb && (
-              <div className="bg-gray-900 border-b border-gray-800 px-3 py-2.5 flex flex-col gap-2">
-                {/* Row 1: targets + result + clear */}
-                <div className="flex items-center gap-3">
-                  <span className="text-yellow-400 text-sm shrink-0">🎯</span>
+              <div className="bg-gray-900 border-b border-gray-800 px-3 py-2.5 flex flex-col gap-2.5">
 
-                  {/* Target cards */}
-                  <div className="flex items-center gap-2 flex-1 min-w-0">
-                    {dvProb.targetIds.length === 0 ? (
+                {/* Row 1: targets + condition + result + close */}
+                <div className="flex items-start gap-3 flex-wrap">
+                  <span className="text-yellow-400 text-sm shrink-0 mt-1">🎯</span>
+
+                  {/* Target pills with minCount */}
+                  <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+                    {dvProb.targets.length === 0 ? (
                       <span className="text-xs text-gray-500 italic">カードをダブルクリックして選択</span>
                     ) : (
-                      dvProb.targetIds.map((id, i) => {
-                        const card = deckCards.find((c) => c.id === id);
+                      dvProb.targets.map((target, i) => {
+                        const card = deckCards.find((c) => c.id === target.cardId);
                         const inDeck = dvTargetCounts[i] ?? 0;
                         return (
-                          <div
-                            key={id}
-                            className="flex items-center gap-1 bg-yellow-900/30 border border-yellow-700/50 rounded px-1.5 py-0.5 cursor-pointer hover:bg-yellow-900/50"
-                            onClick={() => handleDvDoubleClick(id)}
-                            title="クリックで解除"
-                          >
-                            {card?.imageUrl && (
-                              <img src={card.imageUrl} className="w-6 h-8 object-cover rounded shrink-0" />
-                            )}
-                            <div>
-                              <div className="text-[10px] text-yellow-200 leading-tight max-w-[80px] truncate">{card?.name}</div>
+                          <div key={target.cardId} className="flex items-center gap-1.5 bg-yellow-900/30 border border-yellow-700/50 rounded-lg px-2 py-1">
+                            {card?.imageUrl && <img src={card.imageUrl} className="w-7 h-9 object-cover rounded shrink-0" />}
+                            <div className="min-w-0">
+                              <div className="text-[10px] text-yellow-200 max-w-[80px] truncate">{card?.name}</div>
                               <div className="text-[10px] text-blue-400">山 {inDeck}枚</div>
                             </div>
-                            <span className="text-[8px] font-bold text-yellow-500 ml-0.5">{String.fromCharCode(65 + i)}</span>
+                            {/* minCount spinner */}
+                            <div className="flex flex-col items-center ml-1">
+                              <span className="text-[8px] text-gray-500 leading-none">最低</span>
+                              <div className="flex items-center gap-0.5 mt-0.5">
+                                <button onClick={() => setDvTargetMinCount(target.cardId, Math.max(1, target.minCount - 1))} className="w-4 h-4 bg-gray-700 hover:bg-gray-600 rounded text-xs leading-none flex items-center justify-center">−</button>
+                                <span className="text-xs font-bold text-white w-4 text-center">{target.minCount}</span>
+                                <button onClick={() => setDvTargetMinCount(target.cardId, Math.min(4, target.minCount + 1))} className="w-4 h-4 bg-gray-700 hover:bg-gray-600 rounded text-xs leading-none flex items-center justify-center">＋</button>
+                              </div>
+                            </div>
+                            <button onClick={() => handleDvDoubleClick(target.cardId)} className="text-gray-600 hover:text-red-400 text-sm ml-0.5 shrink-0" title="解除">×</button>
                           </div>
                         );
                       })
                     )}
-                  </div>
 
-                  {/* Probability result */}
-                  <div className="shrink-0 text-right">
-                    {dvProb.steps.length > 0 && dvProb.targetIds.length > 0 ? (
-                      <div
-                        className={`text-3xl font-bold tabular-nums leading-none ${
-                          dvProbability === null ? "text-gray-600"
-                            : dvProbability >= 0.8 ? "text-green-400"
-                            : dvProbability >= 0.5 ? "text-yellow-400"
-                            : "text-red-400"
-                        }`}
-                      >
-                        {dvProbability === null ? "—" : formatPct(dvProbability)}
+                    {/* AND/OR toggle (shown when 2+ targets) */}
+                    {dvProb.targets.length >= 2 && (
+                      <div className="flex items-center gap-1 border border-gray-700 rounded-lg overflow-hidden">
+                        <button
+                          onClick={() => setDvProb((p) => p ? { ...p, condition: "any" } : p)}
+                          className={`text-[10px] px-2 py-1 transition-colors ${dvProb.condition === "any" ? "bg-indigo-600 text-white" : "text-gray-500 hover:text-gray-300"}`}
+                        >
+                          OR
+                        </button>
+                        <button
+                          onClick={() => setDvProb((p) => p ? { ...p, condition: "all" } : p)}
+                          className={`text-[10px] px-2 py-1 transition-colors ${dvProb.condition === "all" ? "bg-indigo-600 text-white" : "text-gray-500 hover:text-gray-300"}`}
+                        >
+                          AND
+                        </button>
                       </div>
-                    ) : (
-                      <span className="text-xs text-gray-600">効果を選択→</span>
                     )}
                   </div>
 
-                  <button
-                    onClick={() => setDvProb(null)}
-                    className="text-gray-600 hover:text-white text-lg leading-none shrink-0"
-                    title="確率モード終了"
-                  >
-                    ×
-                  </button>
+                  {/* Result */}
+                  <div className="shrink-0 text-right">
+                    {dvProb.steps.length > 0 && dvProb.targets.length > 0 ? (
+                      <div className={`text-4xl font-bold tabular-nums leading-none ${
+                        dvProbability === null ? "text-gray-600" : dvProbability >= 0.8 ? "text-green-400" : dvProbability >= 0.5 ? "text-yellow-400" : "text-red-400"
+                      }`}>
+                        {dvProbability === null ? "—" : formatPct(dvProbability)}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-gray-600">↓効果を選択</span>
+                    )}
+                  </div>
+
+                  <button onClick={() => setDvProb(null)} className="text-gray-600 hover:text-white text-xl leading-none shrink-0 mt-0.5" title="確率モード終了">×</button>
                 </div>
 
-                {/* Row 2: effect buttons */}
+                {/* Row 2: effect buttons + steps */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
                   {DEFAULT_EFFECTS.map((effect) => (
-                    <button
-                      key={effect.key}
-                      onClick={() => addDvStep(effect.key)}
-                      title={`${effect.label} — ${effect.description}`}
+                    <button key={effect.key} onClick={() => addDvStep(effect.key)} title={`${effect.label} — ${effect.description}`}
                       className="shrink-0 rounded overflow-hidden border-2 border-transparent hover:border-red-500 active:scale-95 transition-all"
-                      style={{ width: 40, height: 56 }}
-                    >
-                      {effect.imageUrl ? (
-                        <img src={effect.imageUrl} alt={effect.label} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full bg-gray-700 flex items-center justify-center text-[9px] text-gray-400">
-                          {effect.short}
-                        </div>
-                      )}
+                      style={{ width: 40, height: 56 }}>
+                      {effect.imageUrl
+                        ? <img src={effect.imageUrl} alt={effect.label} className="w-full h-full object-cover" />
+                        : <div className="w-full h-full bg-gray-700 flex items-center justify-center text-[9px] text-gray-400">{effect.short}</div>
+                      }
                     </button>
                   ))}
 
-                  {/* Steps sequence */}
+                  {/* Steps */}
                   {dvProb.steps.length > 0 && (
-                    <div className="flex items-center gap-1 ml-2 pl-2 border-l border-gray-700">
-                      {dvProb.steps.map((step, i) => {
+                    <div className="flex items-center gap-1 ml-2 pl-2 border-l border-gray-700 shrink-0">
+                      {dvProb.steps.map((step) => {
                         const effect = DEFAULT_EFFECTS.find((e) => e.key === step.effectKey);
                         if (!effect) return null;
                         return (
-                          <div key={step.id} className="flex items-center gap-0.5">
-                            <span className="text-[8px] text-gray-600">{i + 1}.</span>
-                            {effect.imageUrl ? (
-                              <img src={effect.imageUrl} className="w-7 h-10 object-cover rounded" title={effect.label} />
-                            ) : (
-                              <span className="text-[9px] text-gray-400">{effect.short}</span>
-                            )}
-                            <button
-                              onClick={() =>
-                                setDvProb((p) => p ? { ...p, steps: p.steps.filter((s) => s.id !== step.id) } : p)
-                              }
-                              className="text-gray-700 hover:text-red-400 text-[10px] leading-none -ml-0.5"
-                            >
-                              ×
-                            </button>
+                          <div key={step.id} className="flex items-center">
+                            {effect.imageUrl
+                              ? <img src={effect.imageUrl} className="w-7 h-10 object-cover rounded" title={effect.label} />
+                              : <span className="text-[9px] text-gray-400 px-1">{effect.short}</span>
+                            }
+                            <button onClick={() => setDvProb((p) => p ? { ...p, steps: p.steps.filter((s) => s.id !== step.id) } : p)}
+                              className="text-gray-700 hover:text-red-400 text-xs leading-none -ml-1 -mt-3 z-10">×</button>
                           </div>
                         );
                       })}
                       <button
                         onClick={() => setDvProb((p) => p ? { ...p, steps: [] } : p)}
-                        className="text-[9px] text-gray-600 hover:text-gray-400 ml-1"
+                        className="text-[10px] font-semibold text-red-400 hover:text-red-300 bg-red-900/30 hover:bg-red-900/50 border border-red-800/50 rounded px-2 py-1 ml-1 transition-colors shrink-0"
                       >
                         クリア
                       </button>
@@ -717,7 +826,7 @@ export default function Home() {
             <div className="p-3">
               <div className="flex flex-wrap gap-1.5">
                 {board.deck.map((c, i) => {
-                  const isTarget = dvProb?.targetIds.includes(c.cardId);
+                  const isTarget = dvProb?.targets.some((t) => t.cardId === c.cardId);
                   return (
                     <div
                       key={c.instanceId}

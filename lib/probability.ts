@@ -153,9 +153,11 @@ export function calculateProbability(params: {
   steps: ProbStep[];
   effects: CardEffect[];
   condition?: "any" | "all" | "atLeast";
+  minCounts?: number[]; // per-target minimum hits required (default all 1)
   minHits?: number;
 }): number {
-  const { deckSize, handSize, targetCounts, steps, effects, condition = "any", minHits = 1 } = params;
+  const { deckSize, handSize, targetCounts, steps, effects, condition = "any", minCounts, minHits = 1 } = params;
+  const mc = minCounts && minCounts.length === targetCounts.length ? minCounts : targetCounts.map(() => 1);
   const n = targetCounts.length;
   if (n === 0 || steps.length === 0) return 0;
   if (targetCounts.every((c) => c === 0)) return 0;
@@ -192,8 +194,8 @@ export function calculateProbability(params: {
     const active = targetCounts.map((c, i) => (c > 0 ? i : -1)).filter((i) => i >= 0);
     if (active.length === 0) continue;
     let met = false;
-    if (condition === "any") met = active.some((i) => hits[i] >= 1);
-    else if (condition === "all") met = active.every((i) => hits[i] >= 1);
+    if (condition === "any") met = active.some((i) => hits[i] >= mc[i]);
+    else if (condition === "all") met = active.every((i) => hits[i] >= mc[i]);
     else met = hits.reduce((a, b) => a + b, 0) >= minHits;
     if (met) success += item.prob;
   }

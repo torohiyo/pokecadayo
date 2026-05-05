@@ -9,7 +9,7 @@ export const DEFAULT_EFFECTS: CardEffect[] = [
     draw: 7,
     compress: 0,
     description: "手札を捨て山札から7枚引く",
-    imageUrl: "https://www.pokemon-card.com/assets/images/card_images/large/S6a/045454_T_HAKASENO_KENKYU_MAGNOLIA.jpg",
+    imageUrl: "https://www.pokemon-card.com/assets/images/card_images/large/SV11B/047620_T_HAKASENOKENKIXYUU.jpg",
     builtin: true,
   },
   {
