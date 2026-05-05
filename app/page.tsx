@@ -1,36 +1,141 @@
 "use client";
 
 import { useState, useCallback, useMemo, useRef } from "react";
-import { DeckCard, GameState, Zone, ZONE_SHORT, ZONE_COLOR, ProbStep } from "@/lib/types";
+import {
+  DeckCard,
+  BoardZone,
+  BoardState,
+  CardInstance,
+  BENCH_ZONES,
+  emptyBoard,
+  shuffleArray,
+  ProbStep,
+} from "@/lib/types";
 import { DEFAULT_EFFECTS } from "@/lib/effects";
 import { calculateProbability, formatPct } from "@/lib/probability";
 
-const NON_DECK_ZONES: Zone[] = ["hand", "prizes", "trash", "field"];
+// ─── helpers ─────────────────────────────────────────────
 
-const CATEGORY_LABELS: Record<DeckCard["category"], string> = {
-  pokemon: "ポケモン",
-  trainer: "トレーナーズ",
-  energy: "エネルギー",
-};
-
-const CATEGORY_ORDER: DeckCard["category"][] = ["pokemon", "trainer", "energy"];
-
-function initGameState(cards: DeckCard[]): GameState {
-  return Object.fromEntries(
-    cards.map((c) => [c.id, { deck: c.totalCount, hand: 0, prizes: 0, trash: 0, field: 0 }])
+function createInstances(cards: DeckCard[]): CardInstance[] {
+  let idx = 0;
+  return cards.flatMap((c) =>
+    Array.from({ length: c.totalCount }, () => ({
+      instanceId: `${c.id}_${idx++}`,
+      cardId: c.id,
+      faceDown: true,
+    }))
   );
 }
+
+// Face-down card visual
+function CardBack({ size }: { size: "sm" | "md" | "lg" }) {
+  const dim = size === "sm" ? "w-[52px] h-[72px]" : size === "lg" ? "w-[80px] h-[112px]" : "w-[64px] h-[90px]";
+  return (
+    <div className={`${dim} rounded-lg bg-gradient-to-br from-red-700 to-red-900 border-2 border-yellow-500 flex items-center justify-center shrink-0`}>
+      <div className="w-4/5 h-4/5 border border-yellow-400/60 rounded flex items-center justify-center">
+        <span className="text-yellow-400 text-base select-none">◆</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Card component ───────────────────────────────────────
+
+interface CardProps {
+  card: CardInstance;
+  cardMap: Map<string, DeckCard>;
+  zone: BoardZone;
+  size?: "sm" | "md" | "lg";
+  isDragging?: boolean;
+  onDragStart: (zone: BoardZone, instanceId: string) => void;
+  onDragEnd: () => void;
+}
+
+function Card({ card, cardMap, zone, size = "md", isDragging, onDragStart, onDragEnd }: CardProps) {
+  const deckCard = cardMap.get(card.cardId);
+  const dim = size === "sm" ? "w-[52px] h-[72px]" : size === "lg" ? "w-[80px] h-[112px]" : "w-[64px] h-[90px]";
+
+  return (
+    <div
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = "move";
+        onDragStart(zone, card.instanceId);
+      }}
+      onDragEnd={onDragEnd}
+      className={`${dim} rounded-lg overflow-hidden cursor-grab active:cursor-grabbing shrink-0 transition-opacity select-none ${isDragging ? "opacity-30" : "hover:ring-2 hover:ring-yellow-400"}`}
+    >
+      {card.faceDown ? (
+        <CardBack size={size} />
+      ) : deckCard?.imageUrl ? (
+        <img src={deckCard.imageUrl} alt={deckCard.name} className="w-full h-full object-cover" draggable={false} />
+      ) : (
+        <div className="w-full h-full bg-gray-700 flex items-center justify-center text-[10px] text-gray-400 p-1 text-center leading-tight">
+          {deckCard?.name ?? "?"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Drop Zone wrapper ────────────────────────────────────
+
+interface DropZoneProps {
+  zone: BoardZone;
+  activeZone: BoardZone | null;
+  hasDragging: boolean;
+  onDrop: (zone: BoardZone) => void;
+  onDragOver: (zone: BoardZone) => void;
+  onDragLeave: () => void;
+  className?: string;
+  children: React.ReactNode;
+}
+
+function DropZone({ zone, activeZone, hasDragging, onDrop, onDragOver, onDragLeave, className, children }: DropZoneProps) {
+  const isOver = activeZone === zone && hasDragging;
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); onDragOver(zone); }}
+      onDragLeave={onDragLeave}
+      onDrop={() => onDrop(zone)}
+      className={`${className ?? ""} ${isOver ? "ring-2 ring-yellow-400 ring-inset" : ""} transition-all`}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ─── Empty slot placeholder ───────────────────────────────
+
+function EmptySlot({ size, label }: { size: "sm" | "md" | "lg"; label?: string }) {
+  const dim = size === "sm" ? "w-[52px] h-[72px]" : size === "lg" ? "w-[80px] h-[112px]" : "w-[64px] h-[90px]";
+  return (
+    <div className={`${dim} rounded-lg border-2 border-dashed border-white/20 flex items-center justify-center shrink-0`}>
+      {label && <span className="text-white/20 text-[9px] text-center px-1">{label}</span>}
+    </div>
+  );
+}
+
+// ─── Main page ────────────────────────────────────────────
 
 export default function Home() {
   const [deckCode, setDeckCode] = useState("");
   const [deckCards, setDeckCards] = useState<DeckCard[]>([]);
-  const [gameState, setGameState] = useState<GameState>({});
-  const [targetIds, setTargetIds] = useState<string[]>([]);
-  const [steps, setSteps] = useState<ProbStep[]>([]);
+  const [board, setBoard] = useState<BoardState>(emptyBoard());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<{ zone: BoardZone; instanceId: string } | null>(null);
+  const [dragOver, setDragOver] = useState<BoardZone | null>(null);
+
+  // Probability panel
+  const [probOpen, setProbOpen] = useState(false);
+  const [targetIds, setTargetIds] = useState<string[]>([]);
+  const [steps, setSteps] = useState<ProbStep[]>([]);
   const stepIdRef = useRef(0);
+
+  const cardMap = useMemo(() => new Map(deckCards.map((c) => [c.id, c])), [deckCards]);
+
+  // ── Load deck ────────────────────────────────────────────
 
   const loadDeck = useCallback(async () => {
     const code = deckCode.trim();
@@ -42,10 +147,12 @@ export default function Home() {
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setDeckCards(data.cards);
-      setGameState(initGameState(data.cards));
+      const instances = shuffleArray(createInstances(data.cards));
+      const b = emptyBoard();
+      b.deck = instances;
+      setBoard(b);
       setTargetIds([]);
       setSteps([]);
-      setExpandedId(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "読み込みに失敗しました");
     } finally {
@@ -53,251 +160,342 @@ export default function Home() {
     }
   }, [deckCode]);
 
-  const moveCard = useCallback((cardId: string, from: Zone, to: Zone) => {
-    setGameState((prev) => {
-      const z = prev[cardId];
-      if (!z || z[from] <= 0) return prev;
-      return { ...prev, [cardId]: { ...z, [from]: z[from] - 1, [to]: z[to] + 1 } };
+  // ── Setup: deal 7 hand, 6 prizes ─────────────────────────
+
+  const setupGame = useCallback(() => {
+    setBoard((prev) => {
+      const all = Object.values(prev).flat();
+      const shuffled = shuffleArray(all.map((c) => ({ ...c, faceDown: true })));
+      const b = emptyBoard();
+      b.prizes = shuffled.slice(0, 6);
+      b.hand = shuffled.slice(6, 13).map((c) => ({ ...c, faceDown: false }));
+      b.deck = shuffled.slice(13);
+      return b;
     });
   }, []);
 
-  const resetGameState = useCallback(() => {
-    setGameState(initGameState(deckCards));
-  }, [deckCards]);
+  // ── Draw one from deck ────────────────────────────────────
 
-  const toggleTarget = useCallback((cardId: string) => {
-    setTargetIds((prev) => {
-      if (prev.includes(cardId)) return prev.filter((id) => id !== cardId);
-      if (prev.length >= 3) return [...prev.slice(1), cardId];
-      return [...prev, cardId];
+  const drawOne = useCallback(() => {
+    setBoard((prev) => {
+      if (prev.deck.length === 0) return prev;
+      const top = { ...prev.deck[prev.deck.length - 1], faceDown: false };
+      return { ...prev, deck: prev.deck.slice(0, -1), hand: [...prev.hand, top] };
     });
   }, []);
 
-  const addStep = useCallback((effectKey: string) => {
-    const effect = DEFAULT_EFFECTS.find((e) => e.key === effectKey);
-    if (!effect) return;
-    setSteps((prev) => [
-      ...prev,
-      { id: ++stepIdRef.current, effectKey, compress: effect.compress },
-    ]);
+  // ── Drag & Drop ───────────────────────────────────────────
+
+  const handleDragStart = useCallback((zone: BoardZone, instanceId: string) => {
+    setDragging({ zone, instanceId });
   }, []);
 
-  const removeStep = useCallback((id: number) => {
-    setSteps((prev) => prev.filter((s) => s.id !== id));
+  const handleDragEnd = useCallback(() => {
+    setDragging(null);
+    setDragOver(null);
   }, []);
 
-  const updateStepCompress = useCallback((id: number, compress: number) => {
-    setSteps((prev) => prev.map((s) => (s.id === id ? { ...s, compress } : s)));
-  }, []);
+  const handleDrop = useCallback(
+    (targetZone: BoardZone) => {
+      if (!dragging) return;
+      setBoard((prev) => {
+        const card = prev[dragging.zone].find((c) => c.instanceId === dragging.instanceId);
+        if (!card) return prev;
+        const faceDown =
+          targetZone === "prizes" || targetZone === "deck"
+            ? true
+            : card.faceDown && targetZone === dragging.zone
+            ? true
+            : false;
+        const updated = { ...card, faceDown };
+        return {
+          ...prev,
+          [dragging.zone]: prev[dragging.zone].filter((c) => c.instanceId !== dragging.instanceId),
+          [targetZone]: [...prev[targetZone], updated],
+        };
+      });
+      setDragging(null);
+      setDragOver(null);
+    },
+    [dragging]
+  );
 
-  const deckSize = useMemo(
-    () => Object.values(gameState).reduce((sum, z) => sum + z.deck, 0),
-    [gameState]
-  );
-  const handSize = useMemo(
-    () => Object.values(gameState).reduce((sum, z) => sum + z.hand, 0),
-    [gameState]
-  );
-  const prizesCount = useMemo(
-    () => Object.values(gameState).reduce((sum, z) => sum + z.prizes, 0),
-    [gameState]
-  );
-  const trashCount = useMemo(
-    () => Object.values(gameState).reduce((sum, z) => sum + z.trash, 0),
-    [gameState]
-  );
+  const dropProps = (zone: BoardZone) => ({
+    zone,
+    activeZone: dragOver,
+    hasDragging: !!dragging,
+    onDrop: handleDrop,
+    onDragOver: (z: BoardZone) => setDragOver(z),
+    onDragLeave: () => setDragOver(null),
+  });
+
+  const cardProps = (zone: BoardZone) => ({
+    zone,
+    cardMap,
+    onDragStart: handleDragStart,
+    onDragEnd: handleDragEnd,
+  });
+
+  // ── Probability ───────────────────────────────────────────
+
+  const deckSize = board.deck.length;
+  const handSize = board.hand.length;
   const targetCounts = useMemo(
-    () => targetIds.map((id) => gameState[id]?.deck ?? 0),
-    [targetIds, gameState]
+    () => targetIds.map((id) => board.deck.filter((c) => c.cardId === id).length),
+    [targetIds, board.deck]
   );
-
   const probability = useMemo(() => {
     if (steps.length === 0 || targetIds.length === 0) return null;
     return calculateProbability({ deckSize, handSize, targetCounts, steps, effects: DEFAULT_EFFECTS });
   }, [deckSize, handSize, targetCounts, steps]);
 
-  const grouped = useMemo(() => {
-    const g: Partial<Record<DeckCard["category"], DeckCard[]>> = {};
-    for (const cat of CATEGORY_ORDER) {
-      const cards = deckCards.filter((c) => c.category === cat);
-      if (cards.length > 0) g[cat] = cards;
-    }
-    return g;
-  }, [deckCards]);
-
-  const totalCards = deckCards.reduce((s, c) => s + c.totalCount, 0);
+  const isGameSetup = board.hand.length > 0 || board.prizes.length > 0;
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
-      <header className="bg-gray-900 border-b border-gray-800 px-4 py-3">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center gap-3">
-          <h1 className="text-xl font-bold text-red-400 tracking-wide shrink-0">🃏 POKECADAYO</h1>
-          <div className="flex gap-2 flex-1">
-            <input
-              type="text"
-              value={deckCode}
-              onChange={(e) => setDeckCode(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && loadDeck()}
-              placeholder="デッキコードを入力 (例: XXXXXX)"
-              className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm placeholder-gray-500 focus:outline-none focus:border-red-500"
-            />
+    <div className="min-h-screen bg-[#0d3b1e] text-white flex flex-col overflow-hidden">
+      {/* ── Header ── */}
+      <header className="bg-black/40 px-3 py-2 flex items-center gap-2 shrink-0 border-b border-white/10">
+        <span className="font-bold text-yellow-400 text-sm tracking-wide shrink-0">🃏 POKECADAYO</span>
+        <input
+          type="text"
+          value={deckCode}
+          onChange={(e) => setDeckCode(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && loadDeck()}
+          placeholder="デッキコード"
+          className="bg-black/40 border border-white/20 rounded px-2 py-1 text-xs w-36 placeholder-white/30 focus:outline-none focus:border-yellow-400"
+        />
+        <button
+          onClick={loadDeck}
+          disabled={loading || !deckCode.trim()}
+          className="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 text-black text-xs font-bold px-3 py-1 rounded transition-colors shrink-0"
+        >
+          {loading ? "..." : "読込"}
+        </button>
+        {deckCards.length > 0 && (
+          <button
+            onClick={setupGame}
+            className="bg-green-500 hover:bg-green-400 text-black text-xs font-bold px-3 py-1 rounded transition-colors shrink-0"
+          >
+            {isGameSetup ? "再セット" : "セット"}
+          </button>
+        )}
+        {error && <span className="text-red-400 text-xs truncate">{error}</span>}
+        <div className="flex-1" />
+        <button
+          onClick={() => setProbOpen((p) => !p)}
+          className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3 py-1 rounded transition-colors shrink-0"
+        >
+          確率計算
+        </button>
+      </header>
+
+      {/* ── Board ── */}
+      <div className="flex-1 p-2 flex flex-col gap-2 min-h-0">
+
+        {/* Row 1: prizes + battle + stadium/vstar */}
+        <div className="flex gap-2 items-stretch">
+
+          {/* Prizes: 2×3 grid */}
+          <DropZone {...dropProps("prizes")} className="bg-black/30 rounded-xl border border-white/10 p-2 shrink-0">
+            <div className="text-[10px] text-white/40 text-center mb-1">サイド ({board.prizes.length})</div>
+            <div className="grid grid-cols-2 gap-1">
+              {Array.from({ length: 6 }).map((_, i) => {
+                const c = board.prizes[i];
+                return c ? (
+                  <Card key={c.instanceId} card={c} size="sm" isDragging={dragging?.instanceId === c.instanceId} {...cardProps("prizes")} />
+                ) : (
+                  <EmptySlot key={i} size="sm" />
+                );
+              })}
+            </div>
+          </DropZone>
+
+          {/* Battle zone */}
+          <DropZone {...dropProps("battle")} className="flex-1 bg-black/30 rounded-xl border border-white/10 p-3 flex flex-col items-center justify-center min-h-[140px]">
+            <div className="text-[10px] text-white/40 mb-2">バトル場</div>
+            <div className="flex gap-1 flex-wrap justify-center">
+              {board.battle.length > 0 ? (
+                board.battle.map((c) => (
+                  <Card key={c.instanceId} card={c} size="lg" isDragging={dragging?.instanceId === c.instanceId} {...cardProps("battle")} />
+                ))
+              ) : (
+                <EmptySlot size="lg" label="ドロップ" />
+              )}
+            </div>
+          </DropZone>
+
+          {/* Right column: stadium + vstar */}
+          <div className="flex flex-col gap-2 shrink-0">
+            <div className="bg-black/30 rounded-xl border border-white/10 p-2 w-[80px] h-[88px] flex flex-col items-center justify-center">
+              <div className="text-[9px] text-white/30 mb-1">スタジアム</div>
+              <EmptySlot size="sm" />
+            </div>
+            <div className="bg-yellow-900/40 rounded-xl border border-yellow-600/40 p-2 w-[80px] flex items-center justify-center">
+              <span className="font-black text-yellow-400 text-sm tracking-wider">VSTAR</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Row 2: Bench */}
+        <div className="flex gap-1.5">
+          {BENCH_ZONES.map((zone, i) => (
+            <DropZone key={zone} {...dropProps(zone)} className="flex-1 bg-black/30 rounded-xl border border-white/10 p-1.5 flex flex-col items-center min-w-0">
+              <div className="text-[9px] text-white/30 mb-1">ベンチ{i + 1}</div>
+              <div className="flex flex-col gap-0.5 items-center">
+                {board[zone].length > 0 ? (
+                  board[zone].map((c) => (
+                    <Card key={c.instanceId} card={c} size="sm" isDragging={dragging?.instanceId === c.instanceId} {...cardProps(zone)} />
+                  ))
+                ) : (
+                  <EmptySlot size="sm" />
+                )}
+              </div>
+            </DropZone>
+          ))}
+        </div>
+
+        {/* Row 3: hand + trash + deck */}
+        <div className="flex gap-2 items-end">
+
+          {/* Hand */}
+          <DropZone {...dropProps("hand")} className="flex-1 bg-black/30 rounded-xl border border-white/10 p-2 min-w-0">
+            <div className="text-[10px] text-white/40 mb-1.5">手札 ({board.hand.length})</div>
+            <div className="flex gap-1 overflow-x-auto pb-1" style={{ minHeight: 90 }}>
+              {board.hand.length > 0 ? (
+                board.hand.map((c) => (
+                  <Card key={c.instanceId} card={c} size="md" isDragging={dragging?.instanceId === c.instanceId} {...cardProps("hand")} />
+                ))
+              ) : (
+                <div className="text-white/20 text-xs self-center px-2">
+                  {deckCards.length === 0 ? "デッキコードを入力してください" : "「セット」で7枚ドロー"}
+                </div>
+              )}
+            </div>
+          </DropZone>
+
+          {/* Trash */}
+          <DropZone {...dropProps("trash")} className="bg-black/30 rounded-xl border border-white/10 p-2 w-[76px] flex flex-col items-center shrink-0">
+            <div className="text-[10px] text-white/40 mb-1">トラッシュ</div>
+            <div className="text-[10px] text-white/30 mb-1">({board.trash.length})</div>
+            {board.trash.length > 0 ? (
+              <Card card={board.trash[board.trash.length - 1]} size="sm" isDragging={dragging?.instanceId === board.trash[board.trash.length - 1].instanceId} {...cardProps("trash")} />
+            ) : (
+              <EmptySlot size="sm" />
+            )}
+          </DropZone>
+
+          {/* Deck */}
+          <div className="bg-black/30 rounded-xl border border-white/10 p-2 w-[76px] flex flex-col items-center shrink-0">
+            <div className="text-[10px] text-white/40 mb-1">山札</div>
+            <div className="text-[10px] text-white/30 mb-1">({board.deck.length})</div>
+            <DropZone {...dropProps("deck")} className="cursor-pointer">
+              {board.deck.length > 0 ? (
+                <div onClick={drawOne} title="クリックで1枚ドロー">
+                  <CardBack size="sm" />
+                </div>
+              ) : (
+                <EmptySlot size="sm" />
+              )}
+            </DropZone>
             <button
-              onClick={loadDeck}
-              disabled={loading || !deckCode.trim()}
-              className="bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded text-sm font-medium transition-colors"
+              onClick={drawOne}
+              disabled={board.deck.length === 0}
+              className="mt-1.5 text-[10px] text-yellow-400/80 hover:text-yellow-300 disabled:opacity-30 transition-colors"
             >
-              {loading ? "読込中..." : "読み込む"}
+              1枚ドロー
             </button>
           </div>
         </div>
-      </header>
+      </div>
 
-      {error && (
-        <div className="max-w-7xl mx-auto px-4 pt-3">
-          <div className="bg-red-900/50 border border-red-700 rounded px-3 py-2 text-sm text-red-200">
-            {error}
-          </div>
-        </div>
-      )}
-
-      {deckCards.length === 0 && !loading && (
-        <div className="max-w-7xl mx-auto px-4 py-20 text-center text-gray-500">
-          <p className="text-5xl mb-4">🃏</p>
-          <p className="text-lg font-medium">デッキコードを入力してデッキを読み込もう</p>
-          <p className="text-sm mt-2">pokemon-card.com のデッキコードに対応しています</p>
-        </div>
-      )}
-
-      {deckCards.length > 0 && (
-        <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col lg:flex-row gap-4">
-          {/* Left: Deck list */}
-          <div className="lg:w-3/5 min-w-0">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="font-semibold text-gray-300 text-sm">
-                デッキ <span className="text-gray-500">({totalCards}枚)</span>
-              </h2>
-              <button
-                onClick={resetGameState}
-                className="text-xs text-gray-500 hover:text-gray-300 border border-gray-800 hover:border-gray-600 rounded px-2 py-1 transition-colors"
-              >
-                ゲームリセット
-              </button>
+      {/* ── Probability Drawer ── */}
+      {probOpen && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-40" onClick={() => setProbOpen(false)} />
+          <aside className="fixed right-0 top-0 h-full w-72 bg-gray-950 border-l border-gray-800 shadow-2xl z-50 flex flex-col">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
+              <span className="font-bold text-sm">確率計算</span>
+              <button onClick={() => setProbOpen(false)} className="text-gray-500 hover:text-white text-xl leading-none">×</button>
             </div>
 
-            {CATEGORY_ORDER.map((cat) => {
-              const cards = grouped[cat];
-              if (!cards) return null;
-              const catTotal = cards.reduce((s, c) => s + c.totalCount, 0);
-              return (
-                <div key={cat} className="mb-5">
-                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                    {CATEGORY_LABELS[cat]} — {catTotal}枚
-                  </div>
-                  <div className="space-y-1">
-                    {cards.map((card) => (
-                      <CardRow
-                        key={card.id}
-                        card={card}
-                        zones={gameState[card.id] ?? { deck: 0, hand: 0, prizes: 0, trash: 0, field: 0 }}
-                        isTarget={targetIds.includes(card.id)}
-                        targetIndex={targetIds.indexOf(card.id)}
-                        expanded={expandedId === card.id}
-                        onToggleExpand={() => setExpandedId((prev) => (prev === card.id ? null : card.id))}
-                        onToggleTarget={() => toggleTarget(card.id)}
-                        onMove={moveCard}
-                      />
-                    ))}
-                  </div>
+            <div className="flex-1 overflow-y-auto p-3 space-y-4">
+              {/* Stats */}
+              <div className="grid grid-cols-2 gap-3 text-center">
+                <div className="bg-gray-900 rounded-lg py-2">
+                  <div className="text-3xl font-bold text-blue-400 tabular-nums">{deckSize}</div>
+                  <div className="text-xs text-gray-500">山札</div>
                 </div>
-              );
-            })}
-          </div>
-
-          {/* Right: Probability panel */}
-          <div className="lg:w-2/5 min-w-0">
-            <div className="lg:sticky lg:top-4 space-y-3">
-              {/* Zone stats */}
-              <div className="bg-gray-900 rounded-lg px-4 py-3">
-                <div className="grid grid-cols-4 gap-2 text-center">
-                  {[
-                    { label: "山札", value: deckSize, color: "text-blue-400" },
-                    { label: "手札", value: handSize, color: "text-yellow-400" },
-                    { label: "サイド", value: prizesCount, color: "text-purple-400" },
-                    { label: "トラッシュ", value: trashCount, color: "text-gray-400" },
-                  ].map(({ label, value, color }) => (
-                    <div key={label}>
-                      <div className={`text-2xl font-bold tabular-nums ${color}`}>{value}</div>
-                      <div className="text-xs text-gray-600">{label}</div>
-                    </div>
-                  ))}
+                <div className="bg-gray-900 rounded-lg py-2">
+                  <div className="text-3xl font-bold text-yellow-400 tabular-nums">{handSize}</div>
+                  <div className="text-xs text-gray-500">手札</div>
                 </div>
               </div>
 
-              {/* Target cards */}
-              <div className="bg-gray-900 rounded-lg p-4">
-                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-                  ターゲット <span className="text-gray-600 normal-case">(最大3枚)</span>
-                </div>
-                {targetIds.length === 0 ? (
-                  <p className="text-xs text-gray-600 italic">
-                    左のカードリストの ☆ を押して引きたいカードを選択
-                  </p>
-                ) : (
-                  <div className="space-y-2">
+              {/* Targets */}
+              <div>
+                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">ターゲット</div>
+                {targetIds.length > 0 && (
+                  <div className="space-y-1.5 mb-2">
                     {targetIds.map((id, i) => {
                       const card = deckCards.find((c) => c.id === id);
-                      if (!card) return null;
-                      const inDeck = gameState[id]?.deck ?? 0;
+                      const inDeck = board.deck.filter((c) => c.cardId === id).length;
                       return (
-                        <div key={id} className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-yellow-500 w-4">
-                            {String.fromCharCode(65 + i)}
-                          </span>
-                          {card.imageUrl && (
-                            <img
-                              src={card.imageUrl}
-                              alt={card.name}
-                              className="w-8 h-10 object-cover rounded shrink-0"
-                            />
-                          )}
+                        <div key={id} className="flex items-center gap-2 bg-gray-900 rounded px-2 py-1">
+                          <span className="text-xs font-bold text-yellow-500 w-4">{String.fromCharCode(65 + i)}</span>
+                          {card?.imageUrl && <img src={card.imageUrl} className="w-6 h-8 object-cover rounded" />}
                           <div className="flex-1 min-w-0">
-                            <div className="text-xs truncate">{card.name}</div>
+                            <div className="text-xs truncate">{card?.name}</div>
                             <div className="text-xs text-blue-400">山 {inDeck}枚</div>
                           </div>
-                          <button
-                            onClick={() => toggleTarget(id)}
-                            className="text-gray-600 hover:text-red-400 text-sm transition-colors shrink-0"
-                          >
-                            ×
-                          </button>
+                          <button onClick={() => setTargetIds((p) => p.filter((x) => x !== id))} className="text-gray-600 hover:text-red-400 text-sm">×</button>
                         </div>
                       );
                     })}
                   </div>
                 )}
+                <div className="text-xs text-gray-500 mb-1">デッキから選択:</div>
+                <div className="max-h-36 overflow-y-auto space-y-0.5">
+                  {deckCards.map((card) => {
+                    const inDeck = board.deck.filter((c) => c.cardId === card.id).length;
+                    const isTarget = targetIds.includes(card.id);
+                    return (
+                      <button
+                        key={card.id}
+                        onClick={() =>
+                          setTargetIds((prev) => {
+                            if (prev.includes(card.id)) return prev.filter((x) => x !== card.id);
+                            if (prev.length >= 3) return [...prev.slice(1), card.id];
+                            return [...prev, card.id];
+                          })
+                        }
+                        className={`w-full flex items-center gap-2 px-2 py-1 rounded text-xs transition-colors ${isTarget ? "bg-yellow-900/50 border border-yellow-700" : "hover:bg-gray-800"}`}
+                      >
+                        {card.imageUrl && <img src={card.imageUrl} className="w-5 h-7 object-cover rounded shrink-0" />}
+                        <span className="flex-1 text-left truncate">{card.name}</span>
+                        <span className={inDeck > 0 ? "text-blue-400" : "text-gray-600"}>山:{inDeck}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
-              {/* Effects rail */}
-              <div className="bg-gray-900 rounded-lg p-4">
-                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-                  カード効果
-                </div>
-                <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+              {/* Effects */}
+              <div>
+                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">カード効果</div>
+                <div className="flex gap-1.5 overflow-x-auto pb-1">
                   {DEFAULT_EFFECTS.map((effect) => (
                     <button
                       key={effect.key}
-                      onClick={() => addStep(effect.key)}
-                      title={`${effect.label}\n${effect.description}`}
-                      className="shrink-0 w-12 h-16 rounded overflow-hidden border-2 border-transparent hover:border-red-500 active:scale-95 transition-all"
+                      onClick={() =>
+                        setSteps((p) => [...p, { id: ++stepIdRef.current, effectKey: effect.key, compress: effect.compress }])
+                      }
+                      title={`${effect.label} — ${effect.description}`}
+                      className="shrink-0 w-[44px] h-[60px] rounded overflow-hidden border-2 border-transparent hover:border-red-500 transition-colors"
                     >
                       {effect.imageUrl ? (
-                        <img
-                          src={effect.imageUrl}
-                          alt={effect.label}
-                          className="w-full h-full object-cover"
-                        />
+                        <img src={effect.imageUrl} alt={effect.label} className="w-full h-full object-cover" />
                       ) : (
-                        <div className="w-full h-full bg-gray-700 flex items-center justify-center text-xs text-gray-400">
+                        <div className="w-full h-full bg-gray-700 flex items-center justify-center text-[10px] text-gray-400">
                           {effect.short}
                         </div>
                       )}
@@ -308,59 +506,35 @@ export default function Home() {
 
               {/* Steps */}
               {steps.length > 0 && (
-                <div className="bg-gray-900 rounded-lg p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                      手順 ({steps.length})
-                    </div>
-                    <button
-                      onClick={() => setSteps([])}
-                      className="text-xs text-gray-600 hover:text-gray-400 transition-colors"
-                    >
-                      クリア
-                    </button>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider">手順</div>
+                    <button onClick={() => setSteps([])} className="text-xs text-gray-600 hover:text-gray-400">クリア</button>
                   </div>
-                  <div className="space-y-2">
+                  <div className="space-y-1">
                     {steps.map((step, i) => {
                       const effect = DEFAULT_EFFECTS.find((e) => e.key === step.effectKey);
                       if (!effect) return null;
                       return (
-                        <div key={step.id} className="flex items-center gap-2">
-                          <span className="text-xs text-gray-600 w-4 shrink-0">{i + 1}</span>
-                          {effect.imageUrl && (
-                            <img
-                              src={effect.imageUrl}
-                              alt={effect.label}
-                              className="w-7 h-9 object-cover rounded shrink-0"
+                        <div key={step.id} className="flex items-center gap-1.5 text-xs">
+                          <span className="text-gray-600 w-3 shrink-0">{i + 1}</span>
+                          {effect.imageUrl && <img src={effect.imageUrl} className="w-6 h-8 object-cover rounded shrink-0" />}
+                          <span className="flex-1 truncate">{effect.label}</span>
+                          {effect.mode === "compress" && (
+                            <input
+                              type="number"
+                              min={0}
+                              max={30}
+                              value={step.compress}
+                              onChange={(e) =>
+                                setSteps((p) =>
+                                  p.map((s) => s.id === step.id ? { ...s, compress: Math.max(0, Math.min(30, parseInt(e.target.value || "0"))) } : s)
+                                )
+                              }
+                              className="w-10 bg-gray-800 border border-gray-700 rounded px-1 text-xs"
                             />
                           )}
-                          <div className="flex-1 min-w-0">
-                            <div className="text-xs truncate">{effect.label}</div>
-                            {effect.mode === "compress" && (
-                              <div className="flex items-center gap-1 mt-0.5">
-                                <span className="text-xs text-gray-500">圧縮枚数:</span>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={30}
-                                  value={step.compress}
-                                  onChange={(e) =>
-                                    updateStepCompress(
-                                      step.id,
-                                      Math.max(0, Math.min(30, parseInt(e.target.value || "0")))
-                                    )
-                                  }
-                                  className="w-12 bg-gray-800 border border-gray-700 rounded px-1 text-xs"
-                                />
-                              </div>
-                            )}
-                          </div>
-                          <button
-                            onClick={() => removeStep(step.id)}
-                            className="text-gray-600 hover:text-red-400 text-sm transition-colors shrink-0"
-                          >
-                            ×
-                          </button>
+                          <button onClick={() => setSteps((p) => p.filter((s) => s.id !== step.id))} className="text-gray-600 hover:text-red-400 shrink-0">×</button>
                         </div>
                       );
                     })}
@@ -370,148 +544,31 @@ export default function Home() {
 
               {/* Result */}
               {steps.length > 0 && (
-                <div className="bg-gray-900 rounded-lg p-4 text-center">
+                <div className="bg-gray-900 rounded-xl p-4 text-center">
                   {targetIds.length === 0 ? (
-                    <p className="text-sm text-gray-600">ターゲットカードを選択してください</p>
+                    <p className="text-sm text-gray-600">ターゲットを選択</p>
                   ) : (
                     <>
                       <div
-                        className={`text-6xl font-bold tabular-nums py-2 ${
-                          probability === null
-                            ? "text-gray-600"
-                            : probability >= 0.8
-                            ? "text-green-400"
-                            : probability >= 0.5
-                            ? "text-yellow-400"
+                        className={`text-5xl font-bold tabular-nums ${
+                          probability === null ? "text-gray-600"
+                            : probability >= 0.8 ? "text-green-400"
+                            : probability >= 0.5 ? "text-yellow-400"
                             : "text-red-400"
                         }`}
                       >
                         {probability === null ? "—" : formatPct(probability)}
                       </div>
                       <p className="text-xs text-gray-500 mt-1">
-                        {steps.length}手順後・{targetIds.map((id) => deckCards.find((c) => c.id === id)?.name ?? "").join(" / ")} を1枚以上引ける確率
+                        {steps.length}手順後に1枚以上引ける確率
                       </p>
                     </>
                   )}
                 </div>
               )}
             </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-interface CardRowProps {
-  card: DeckCard;
-  zones: Record<Zone, number>;
-  isTarget: boolean;
-  targetIndex: number;
-  expanded: boolean;
-  onToggleExpand: () => void;
-  onToggleTarget: () => void;
-  onMove: (cardId: string, from: Zone, to: Zone) => void;
-}
-
-function CardRow({
-  card,
-  zones,
-  isTarget,
-  targetIndex,
-  expanded,
-  onToggleExpand,
-  onToggleTarget,
-  onMove,
-}: CardRowProps) {
-  const activeNonDeck = NON_DECK_ZONES.filter((z) => zones[z] > 0);
-
-  return (
-    <div
-      className={`rounded-lg overflow-hidden transition-colors ${
-        expanded ? "bg-gray-800" : "bg-gray-900 hover:bg-gray-800/70"
-      }`}
-    >
-      <div
-        className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none"
-        onClick={onToggleExpand}
-      >
-        <div className="shrink-0 w-9 h-12 rounded overflow-hidden bg-gray-800">
-          {card.imageUrl ? (
-            <img src={card.imageUrl} alt={card.name} className="w-full h-full object-cover" />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-gray-600 text-xs">?</div>
-          )}
-        </div>
-
-        <div className="flex-1 min-w-0">
-          <div className="text-sm truncate leading-tight">{card.name}</div>
-          <div className="flex items-center gap-1 mt-1 flex-wrap">
-            <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${ZONE_COLOR.deck}`}>
-              山:{zones.deck}
-            </span>
-            {activeNonDeck.map((z) => (
-              <span key={z} className={`text-xs px-1.5 py-0.5 rounded ${ZONE_COLOR[z]}`}>
-                {ZONE_SHORT[z]}:{zones[z]}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleTarget();
-          }}
-          className={`shrink-0 w-7 h-7 flex items-center justify-center rounded transition-colors text-sm ${
-            isTarget
-              ? "bg-yellow-500 text-black font-bold"
-              : "text-gray-600 hover:text-yellow-400"
-          }`}
-          title={isTarget ? "ターゲット解除" : "ターゲットに追加"}
-        >
-          {isTarget ? String.fromCharCode(65 + targetIndex) : "☆"}
-        </button>
-      </div>
-
-      {expanded && (
-        <div
-          className="px-3 pb-3 border-t border-gray-700 pt-2"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="grid grid-cols-2 gap-2">
-            {NON_DECK_ZONES.map((zone) => (
-              <div
-                key={zone}
-                className="flex items-center justify-between bg-gray-950 rounded px-2 py-1.5"
-              >
-                <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${ZONE_COLOR[zone]}`}>
-                  {ZONE_SHORT[zone]}
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={() => onMove(card.id, zone, "deck")}
-                    disabled={zones[zone] <= 0}
-                    className="w-6 h-6 flex items-center justify-center bg-gray-700 hover:bg-gray-600 disabled:opacity-25 disabled:cursor-not-allowed rounded text-sm leading-none transition-colors"
-                  >
-                    −
-                  </button>
-                  <span className="w-5 text-center text-sm tabular-nums">{zones[zone]}</span>
-                  <button
-                    onClick={() => onMove(card.id, "deck", zone)}
-                    disabled={zones.deck <= 0}
-                    className="w-6 h-6 flex items-center justify-center bg-gray-700 hover:bg-gray-600 disabled:opacity-25 disabled:cursor-not-allowed rounded text-sm leading-none transition-colors"
-                  >
-                    ＋
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-          <p className="text-xs text-gray-700 mt-2 text-center">
-            ＋ デッキから移動 / − 山札へ戻す
-          </p>
-        </div>
+          </aside>
+        </>
       )}
     </div>
   );
