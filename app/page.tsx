@@ -14,7 +14,7 @@ import {
 import { DEFAULT_EFFECTS } from "@/lib/effects";
 import { calculateProbability, formatPct } from "@/lib/probability";
 
-// ─── helpers ─────────────────────────────────────────────
+// ─── helpers ─────────────────────────────────────────────────────────────────
 
 function createInstances(cards: DeckCard[]): CardInstance[] {
   let idx = 0;
@@ -27,11 +27,21 @@ function createInstances(cards: DeckCard[]): CardInstance[] {
   );
 }
 
-// Face-down card visual
+// ─── card back ───────────────────────────────────────────────────────────────
+
+const CARD_DIM: Record<"sm" | "md" | "lg", [number, number]> = {
+  sm: [52, 72],
+  md: [64, 90],
+  lg: [80, 112],
+};
+
 function CardBack({ size }: { size: "sm" | "md" | "lg" }) {
-  const dim = size === "sm" ? "w-[52px] h-[72px]" : size === "lg" ? "w-[80px] h-[112px]" : "w-[64px] h-[90px]";
+  const [w, h] = CARD_DIM[size];
   return (
-    <div className={`${dim} rounded-lg bg-gradient-to-br from-red-700 to-red-900 border-2 border-yellow-500 flex items-center justify-center shrink-0`}>
+    <div
+      style={{ width: w, height: h }}
+      className="rounded-lg bg-gradient-to-br from-red-700 to-red-900 border-2 border-yellow-500 flex items-center justify-center shrink-0"
+    >
       <div className="w-4/5 h-4/5 border border-yellow-400/60 rounded flex items-center justify-center">
         <span className="text-yellow-400 text-base select-none">◆</span>
       </div>
@@ -39,7 +49,7 @@ function CardBack({ size }: { size: "sm" | "md" | "lg" }) {
   );
 }
 
-// ─── Card component ───────────────────────────────────────
+// ─── single Card ─────────────────────────────────────────────────────────────
 
 interface CardProps {
   card: CardInstance;
@@ -53,7 +63,7 @@ interface CardProps {
 
 function Card({ card, cardMap, zone, size = "md", isDragging, onDragStart, onDragEnd }: CardProps) {
   const deckCard = cardMap.get(card.cardId);
-  const dim = size === "sm" ? "w-[52px] h-[72px]" : size === "lg" ? "w-[80px] h-[112px]" : "w-[64px] h-[90px]";
+  const [w, h] = CARD_DIM[size];
 
   return (
     <div
@@ -63,7 +73,10 @@ function Card({ card, cardMap, zone, size = "md", isDragging, onDragStart, onDra
         onDragStart(zone, card.instanceId);
       }}
       onDragEnd={onDragEnd}
-      className={`${dim} rounded-lg overflow-hidden cursor-grab active:cursor-grabbing shrink-0 transition-opacity select-none ${isDragging ? "opacity-30" : "hover:ring-2 hover:ring-yellow-400"}`}
+      style={{ width: w, height: h }}
+      className={`rounded-lg overflow-hidden cursor-grab active:cursor-grabbing shrink-0 transition-opacity select-none ${
+        isDragging ? "opacity-30" : "hover:ring-2 hover:ring-yellow-400"
+      }`}
     >
       {card.faceDown ? (
         <CardBack size={size} />
@@ -78,7 +91,36 @@ function Card({ card, cardMap, zone, size = "md", isDragging, onDragStart, onDra
   );
 }
 
-// ─── Drop Zone wrapper ────────────────────────────────────
+// ─── Fanned/stacked card pile ─────────────────────────────────────────────────
+// cards[0] is the "main" card (front, rightmost).  cards[1..] are stacked behind (left).
+
+const STACK_OFFSET = 22; // px per card in the fan
+
+interface StackedProps extends Omit<CardProps, "card"> {
+  cards: CardInstance[];
+  draggingId: string | null;
+}
+
+function StackedCards({ cards, draggingId, size = "sm", ...rest }: StackedProps) {
+  if (cards.length === 0) return null;
+  const [w, h] = CARD_DIM[size];
+  const totalW = w + (cards.length - 1) * STACK_OFFSET;
+
+  // reversed so index-0 of reversed = last placed = leftmost behind
+  const reversed = [...cards].reverse();
+
+  return (
+    <div className="relative shrink-0" style={{ width: totalW, height: h }}>
+      {reversed.map((card, i) => (
+        <div key={card.instanceId} style={{ position: "absolute", left: i * STACK_OFFSET, zIndex: i, top: 0 }}>
+          <Card card={card} size={size} isDragging={draggingId === card.instanceId} {...rest} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Drop Zone wrapper ────────────────────────────────────────────────────────
 
 interface DropZoneProps {
   zone: BoardZone;
@@ -88,16 +130,18 @@ interface DropZoneProps {
   onDragOver: (zone: BoardZone) => void;
   onDragLeave: () => void;
   className?: string;
+  style?: React.CSSProperties;
   children: React.ReactNode;
 }
 
-function DropZone({ zone, activeZone, hasDragging, onDrop, onDragOver, onDragLeave, className, children }: DropZoneProps) {
+function DropZone({ zone, activeZone, hasDragging, onDrop, onDragOver, onDragLeave, className, style, children }: DropZoneProps) {
   const isOver = activeZone === zone && hasDragging;
   return (
     <div
       onDragOver={(e) => { e.preventDefault(); onDragOver(zone); }}
       onDragLeave={onDragLeave}
       onDrop={() => onDrop(zone)}
+      style={style}
       className={`${className ?? ""} ${isOver ? "ring-2 ring-yellow-400 ring-inset" : ""} transition-all`}
     >
       {children}
@@ -105,18 +149,19 @@ function DropZone({ zone, activeZone, hasDragging, onDrop, onDragOver, onDragLea
   );
 }
 
-// ─── Empty slot placeholder ───────────────────────────────
-
 function EmptySlot({ size, label }: { size: "sm" | "md" | "lg"; label?: string }) {
-  const dim = size === "sm" ? "w-[52px] h-[72px]" : size === "lg" ? "w-[80px] h-[112px]" : "w-[64px] h-[90px]";
+  const [w, h] = CARD_DIM[size];
   return (
-    <div className={`${dim} rounded-lg border-2 border-dashed border-white/20 flex items-center justify-center shrink-0`}>
+    <div
+      style={{ width: w, height: h }}
+      className="rounded-lg border-2 border-dashed border-white/20 flex items-center justify-center shrink-0"
+    >
       {label && <span className="text-white/20 text-[9px] text-center px-1">{label}</span>}
     </div>
   );
 }
 
-// ─── Main page ────────────────────────────────────────────
+// ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function Home() {
   const [deckCode, setDeckCode] = useState("");
@@ -127,15 +172,20 @@ export default function Home() {
   const [dragging, setDragging] = useState<{ zone: BoardZone; instanceId: string } | null>(null);
   const [dragOver, setDragOver] = useState<BoardZone | null>(null);
 
-  // Probability panel
+  // deck viewer
+  const [deckViewerOpen, setDeckViewerOpen] = useState(false);
+  const [drawCount, setDrawCount] = useState(1);
+
+  // probability panel
   const [probOpen, setProbOpen] = useState(false);
   const [targetIds, setTargetIds] = useState<string[]>([]);
   const [steps, setSteps] = useState<ProbStep[]>([]);
   const stepIdRef = useRef(0);
 
   const cardMap = useMemo(() => new Map(deckCards.map((c) => [c.id, c])), [deckCards]);
+  const deckOrderMap = useMemo(() => new Map(deckCards.map((c, i) => [c.id, i])), [deckCards]);
 
-  // ── Load deck ────────────────────────────────────────────
+  // ── Load ────────────────────────────────────────────────────────────────────
 
   const loadDeck = useCallback(async () => {
     const code = deckCode.trim();
@@ -153,6 +203,7 @@ export default function Home() {
       setBoard(b);
       setTargetIds([]);
       setSteps([]);
+      setDeckViewerOpen(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "読み込みに失敗しました");
     } finally {
@@ -160,7 +211,7 @@ export default function Home() {
     }
   }, [deckCode]);
 
-  // ── Setup: deal 7 hand, 6 prizes ─────────────────────────
+  // ── Setup ───────────────────────────────────────────────────────────────────
 
   const setupGame = useCallback(() => {
     setBoard((prev) => {
@@ -172,9 +223,10 @@ export default function Home() {
       b.deck = shuffled.slice(13);
       return b;
     });
+    setDeckViewerOpen(false);
   }, []);
 
-  // ── Draw one from deck ────────────────────────────────────
+  // ── Deck operations ─────────────────────────────────────────────────────────
 
   const drawOne = useCallback(() => {
     setBoard((prev) => {
@@ -184,7 +236,32 @@ export default function Home() {
     });
   }, []);
 
-  // ── Drag & Drop ───────────────────────────────────────────
+  const drawN = useCallback(() => {
+    setBoard((prev) => {
+      const n = Math.min(drawCount, prev.deck.length);
+      if (n <= 0) return prev;
+      const drawn = prev.deck.slice(-n).map((c) => ({ ...c, faceDown: false }));
+      return { ...prev, deck: prev.deck.slice(0, -n), hand: [...prev.hand, ...drawn] };
+    });
+  }, [drawCount]);
+
+  const shuffleDeck = useCallback(() => {
+    setBoard((prev) => ({ ...prev, deck: shuffleArray(prev.deck) }));
+  }, []);
+
+  const sortZone = useCallback(
+    (zone: BoardZone) => {
+      setBoard((prev) => ({
+        ...prev,
+        [zone]: [...prev[zone]].sort(
+          (a, b) => (deckOrderMap.get(a.cardId) ?? 999) - (deckOrderMap.get(b.cardId) ?? 999)
+        ),
+      }));
+    },
+    [deckOrderMap]
+  );
+
+  // ── Drag & Drop ─────────────────────────────────────────────────────────────
 
   const handleDragStart = useCallback((zone: BoardZone, instanceId: string) => {
     setDragging({ zone, instanceId });
@@ -201,17 +278,11 @@ export default function Home() {
       setBoard((prev) => {
         const card = prev[dragging.zone].find((c) => c.instanceId === dragging.instanceId);
         if (!card) return prev;
-        const faceDown =
-          targetZone === "prizes" || targetZone === "deck"
-            ? true
-            : card.faceDown && targetZone === dragging.zone
-            ? true
-            : false;
-        const updated = { ...card, faceDown };
+        const faceDown = targetZone === "prizes" || targetZone === "deck";
         return {
           ...prev,
           [dragging.zone]: prev[dragging.zone].filter((c) => c.instanceId !== dragging.instanceId),
-          [targetZone]: [...prev[targetZone], updated],
+          [targetZone]: [...prev[targetZone], { ...card, faceDown }],
         };
       });
       setDragging(null);
@@ -229,14 +300,13 @@ export default function Home() {
     onDragLeave: () => setDragOver(null),
   });
 
-  const cardProps = (zone: BoardZone) => ({
-    zone,
+  const sharedCardProps = {
     cardMap,
     onDragStart: handleDragStart,
     onDragEnd: handleDragEnd,
-  });
+  };
 
-  // ── Probability ───────────────────────────────────────────
+  // ── Probability ──────────────────────────────────────────────────────────────
 
   const deckSize = board.deck.length;
   const handSize = board.hand.length;
@@ -252,7 +322,8 @@ export default function Home() {
   const isGameSetup = board.hand.length > 0 || board.prizes.length > 0;
 
   return (
-    <div className="min-h-screen bg-[#0d3b1e] text-white flex flex-col overflow-hidden">
+    <div className="bg-[#0d3b1e] text-white flex flex-col" style={{ minHeight: "100dvh" }}>
+
       {/* ── Header ── */}
       <header className="bg-black/40 px-3 py-2 flex items-center gap-2 shrink-0 border-b border-white/10">
         <span className="font-bold text-yellow-400 text-sm tracking-wide shrink-0">🃏 POKECADAYO</span>
@@ -290,19 +361,19 @@ export default function Home() {
       </header>
 
       {/* ── Board ── */}
-      <div className="flex-1 p-2 flex flex-col gap-2 min-h-0">
+      <div className="flex-1 p-2 flex flex-col gap-2">
 
         {/* Row 1: prizes + battle + stadium/vstar */}
         <div className="flex gap-2 items-stretch">
 
-          {/* Prizes: 2×3 grid */}
+          {/* Prizes 2×3 */}
           <DropZone {...dropProps("prizes")} className="bg-black/30 rounded-xl border border-white/10 p-2 shrink-0">
             <div className="text-[10px] text-white/40 text-center mb-1">サイド ({board.prizes.length})</div>
             <div className="grid grid-cols-2 gap-1">
               {Array.from({ length: 6 }).map((_, i) => {
                 const c = board.prizes[i];
                 return c ? (
-                  <Card key={c.instanceId} card={c} size="sm" isDragging={dragging?.instanceId === c.instanceId} {...cardProps("prizes")} />
+                  <Card key={c.instanceId} card={c} size="sm" isDragging={dragging?.instanceId === c.instanceId} zone="prizes" {...sharedCardProps} />
                 ) : (
                   <EmptySlot key={i} size="sm" />
                 );
@@ -310,27 +381,23 @@ export default function Home() {
             </div>
           </DropZone>
 
-          {/* Battle zone */}
-          <DropZone {...dropProps("battle")} className="flex-1 bg-black/30 rounded-xl border border-white/10 p-3 flex flex-col items-center justify-center min-h-[140px]">
+          {/* Battle */}
+          <DropZone {...dropProps("battle")} className="flex-1 bg-black/30 rounded-xl border border-white/10 p-3 flex flex-col items-center justify-center" style={{ minHeight: 140 }}>
             <div className="text-[10px] text-white/40 mb-2">バトル場</div>
-            <div className="flex gap-1 flex-wrap justify-center">
-              {board.battle.length > 0 ? (
-                board.battle.map((c) => (
-                  <Card key={c.instanceId} card={c} size="lg" isDragging={dragging?.instanceId === c.instanceId} {...cardProps("battle")} />
-                ))
-              ) : (
-                <EmptySlot size="lg" label="ドロップ" />
-              )}
-            </div>
+            {board.battle.length > 0 ? (
+              <StackedCards cards={board.battle} draggingId={dragging?.instanceId ?? null} size="lg" zone="battle" {...sharedCardProps} />
+            ) : (
+              <EmptySlot size="lg" label="ドロップ" />
+            )}
           </DropZone>
 
-          {/* Right column: stadium + vstar */}
+          {/* Stadium + VSTAR */}
           <div className="flex flex-col gap-2 shrink-0">
-            <div className="bg-black/30 rounded-xl border border-white/10 p-2 w-[80px] h-[88px] flex flex-col items-center justify-center">
+            <div className="bg-black/30 rounded-xl border border-white/10 p-2 flex flex-col items-center justify-center" style={{ width: 80, height: 88 }}>
               <div className="text-[9px] text-white/30 mb-1">スタジアム</div>
               <EmptySlot size="sm" />
             </div>
-            <div className="bg-yellow-900/40 rounded-xl border border-yellow-600/40 p-2 w-[80px] flex items-center justify-center">
+            <div className="bg-yellow-900/40 rounded-xl border border-yellow-600/40 p-2 flex items-center justify-center" style={{ width: 80, height: 36 }}>
               <span className="font-black text-yellow-400 text-sm tracking-wider">VSTAR</span>
             </div>
           </div>
@@ -339,73 +406,168 @@ export default function Home() {
         {/* Row 2: Bench */}
         <div className="flex gap-1.5">
           {BENCH_ZONES.map((zone, i) => (
-            <DropZone key={zone} {...dropProps(zone)} className="flex-1 bg-black/30 rounded-xl border border-white/10 p-1.5 flex flex-col items-center min-w-0">
+            <DropZone key={zone} {...dropProps(zone)} className="flex-1 bg-black/30 rounded-xl border border-white/10 p-1.5 flex flex-col items-center min-w-0 overflow-hidden">
               <div className="text-[9px] text-white/30 mb-1">ベンチ{i + 1}</div>
-              <div className="flex flex-col gap-0.5 items-center">
-                {board[zone].length > 0 ? (
-                  board[zone].map((c) => (
-                    <Card key={c.instanceId} card={c} size="sm" isDragging={dragging?.instanceId === c.instanceId} {...cardProps(zone)} />
-                  ))
-                ) : (
-                  <EmptySlot size="sm" />
-                )}
-              </div>
+              {board[zone].length > 0 ? (
+                <StackedCards cards={board[zone]} draggingId={dragging?.instanceId ?? null} size="sm" zone={zone} {...sharedCardProps} />
+              ) : (
+                <EmptySlot size="sm" />
+              )}
             </DropZone>
           ))}
         </div>
 
-        {/* Row 3: hand + trash + deck */}
-        <div className="flex gap-2 items-end">
+        {/* Row 3: hand + trash + deck controls */}
+        <div className="flex gap-2 items-start">
 
           {/* Hand */}
           <DropZone {...dropProps("hand")} className="flex-1 bg-black/30 rounded-xl border border-white/10 p-2 min-w-0">
-            <div className="text-[10px] text-white/40 mb-1.5">手札 ({board.hand.length})</div>
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-[10px] text-white/40">手札 ({board.hand.length})</span>
+              {board.hand.length > 0 && deckCards.length > 0 && (
+                <button
+                  onClick={() => sortZone("hand")}
+                  className="text-[9px] text-white/40 hover:text-white/70 border border-white/20 hover:border-white/40 rounded px-1.5 py-0.5 transition-colors"
+                >
+                  デッキ順
+                </button>
+              )}
+            </div>
             <div className="flex gap-1 overflow-x-auto pb-1" style={{ minHeight: 90 }}>
               {board.hand.length > 0 ? (
                 board.hand.map((c) => (
-                  <Card key={c.instanceId} card={c} size="md" isDragging={dragging?.instanceId === c.instanceId} {...cardProps("hand")} />
+                  <Card key={c.instanceId} card={c} size="md" isDragging={dragging?.instanceId === c.instanceId} zone="hand" {...sharedCardProps} />
                 ))
               ) : (
                 <div className="text-white/20 text-xs self-center px-2">
-                  {deckCards.length === 0 ? "デッキコードを入力してください" : "「セット」で7枚ドロー"}
+                  {deckCards.length === 0 ? "デッキコードを入力" : "「セット」で7枚ドロー"}
                 </div>
               )}
             </div>
           </DropZone>
 
           {/* Trash */}
-          <DropZone {...dropProps("trash")} className="bg-black/30 rounded-xl border border-white/10 p-2 w-[76px] flex flex-col items-center shrink-0">
-            <div className="text-[10px] text-white/40 mb-1">トラッシュ</div>
+          <DropZone {...dropProps("trash")} className="bg-black/30 rounded-xl border border-white/10 p-2 flex flex-col items-center shrink-0" style={{ width: 80 }}>
+            <div className="text-[10px] text-white/40 mb-0.5">トラッシュ</div>
             <div className="text-[10px] text-white/30 mb-1">({board.trash.length})</div>
             {board.trash.length > 0 ? (
-              <Card card={board.trash[board.trash.length - 1]} size="sm" isDragging={dragging?.instanceId === board.trash[board.trash.length - 1].instanceId} {...cardProps("trash")} />
+              <StackedCards cards={board.trash.slice(-4)} draggingId={dragging?.instanceId ?? null} size="sm" zone="trash" {...sharedCardProps} />
             ) : (
               <EmptySlot size="sm" />
+            )}
+            {board.trash.length > 0 && deckCards.length > 0 && (
+              <button
+                onClick={() => sortZone("trash")}
+                className="mt-1.5 text-[9px] text-white/40 hover:text-white/70 border border-white/20 hover:border-white/40 rounded px-1.5 py-0.5 transition-colors"
+              >
+                デッキ順
+              </button>
             )}
           </DropZone>
 
           {/* Deck */}
-          <div className="bg-black/30 rounded-xl border border-white/10 p-2 w-[76px] flex flex-col items-center shrink-0">
-            <div className="text-[10px] text-white/40 mb-1">山札</div>
-            <div className="text-[10px] text-white/30 mb-1">({board.deck.length})</div>
-            <DropZone {...dropProps("deck")} className="cursor-pointer">
-              {board.deck.length > 0 ? (
-                <div onClick={drawOne} title="クリックで1枚ドロー">
-                  <CardBack size="sm" />
-                </div>
-              ) : (
-                <EmptySlot size="sm" />
-              )}
+          <div className="bg-black/30 rounded-xl border border-white/10 p-2 flex flex-col items-center shrink-0 gap-1" style={{ width: 90 }}>
+            <div className="text-[10px] text-white/40">山札 ({board.deck.length})</div>
+            <DropZone {...dropProps("deck")}>
+              <div onClick={drawOne} className="cursor-pointer" title="クリックで1枚ドロー">
+                {board.deck.length > 0 ? <CardBack size="sm" /> : <EmptySlot size="sm" />}
+              </div>
             </DropZone>
+            {/* Draw N */}
+            <div className="flex gap-1 items-center w-full">
+              <input
+                type="number"
+                min={1}
+                max={board.deck.length || 1}
+                value={drawCount}
+                onChange={(e) => setDrawCount(Math.max(1, parseInt(e.target.value) || 1))}
+                className="w-8 bg-black/40 border border-white/20 rounded text-center text-[10px] text-white py-0.5 focus:outline-none"
+              />
+              <button
+                onClick={drawN}
+                disabled={board.deck.length === 0}
+                className="flex-1 text-[9px] bg-white/10 hover:bg-white/20 disabled:opacity-30 rounded px-1 py-1 transition-colors"
+              >
+                枚引く
+              </button>
+            </div>
+            {/* Shuffle */}
             <button
-              onClick={drawOne}
-              disabled={board.deck.length === 0}
-              className="mt-1.5 text-[10px] text-yellow-400/80 hover:text-yellow-300 disabled:opacity-30 transition-colors"
+              onClick={shuffleDeck}
+              disabled={board.deck.length < 2}
+              className="w-full text-[9px] bg-white/10 hover:bg-white/20 disabled:opacity-30 rounded px-1 py-1 transition-colors"
             >
-              1枚ドロー
+              シャッフル
+            </button>
+            {/* Sort deck */}
+            {board.deck.length > 0 && deckCards.length > 0 && (
+              <button
+                onClick={() => sortZone("deck")}
+                className="w-full text-[9px] bg-white/10 hover:bg-white/20 rounded px-1 py-1 transition-colors"
+              >
+                デッキ順
+              </button>
+            )}
+            {/* Open deck viewer */}
+            <button
+              onClick={() => setDeckViewerOpen((p) => !p)}
+              disabled={board.deck.length === 0}
+              className={`w-full text-[9px] rounded px-1 py-1 transition-colors disabled:opacity-30 ${
+                deckViewerOpen ? "bg-yellow-600 text-black font-bold" : "bg-white/10 hover:bg-white/20"
+              }`}
+            >
+              山札を見る
             </button>
           </div>
         </div>
+
+        {/* ── Deck Viewer ── */}
+        {deckViewerOpen && (
+          <div className="bg-gray-950 rounded-xl border border-gray-700 p-3">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold">山札 ({board.deck.length}枚)</span>
+                {deckCards.length > 0 && (
+                  <button
+                    onClick={() => sortZone("deck")}
+                    className="text-[9px] text-white/50 hover:text-white border border-white/20 hover:border-white/40 rounded px-1.5 py-0.5 transition-colors"
+                  >
+                    デッキ順に並び替え
+                  </button>
+                )}
+                <button
+                  onClick={shuffleDeck}
+                  className="text-[9px] text-white/50 hover:text-white border border-white/20 hover:border-white/40 rounded px-1.5 py-0.5 transition-colors"
+                >
+                  シャッフル
+                </button>
+              </div>
+              <button
+                onClick={() => setDeckViewerOpen(false)}
+                className="text-gray-500 hover:text-white text-lg leading-none"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {board.deck.map((c, i) => (
+                <div key={c.instanceId} className="flex flex-col items-center gap-0.5">
+                  <Card
+                    card={{ ...c, faceDown: false }}
+                    size="sm"
+                    zone="deck"
+                    isDragging={dragging?.instanceId === c.instanceId}
+                    {...sharedCardProps}
+                  />
+                  <span className="text-[8px] text-gray-600">{board.deck.length - i}</span>
+                </div>
+              ))}
+              {board.deck.length === 0 && (
+                <p className="text-gray-600 text-sm">山札にカードがありません</p>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Probability Drawer ── */}
@@ -417,7 +579,6 @@ export default function Home() {
               <span className="font-bold text-sm">確率計算</span>
               <button onClick={() => setProbOpen(false)} className="text-gray-500 hover:text-white text-xl leading-none">×</button>
             </div>
-
             <div className="flex-1 overflow-y-auto p-3 space-y-4">
               {/* Stats */}
               <div className="grid grid-cols-2 gap-3 text-center">
@@ -490,7 +651,8 @@ export default function Home() {
                         setSteps((p) => [...p, { id: ++stepIdRef.current, effectKey: effect.key, compress: effect.compress }])
                       }
                       title={`${effect.label} — ${effect.description}`}
-                      className="shrink-0 w-[44px] h-[60px] rounded overflow-hidden border-2 border-transparent hover:border-red-500 transition-colors"
+                      className="shrink-0 rounded overflow-hidden border-2 border-transparent hover:border-red-500 transition-colors"
+                      style={{ width: 44, height: 60 }}
                     >
                       {effect.imageUrl ? (
                         <img src={effect.imageUrl} alt={effect.label} className="w-full h-full object-cover" />
@@ -528,7 +690,9 @@ export default function Home() {
                               value={step.compress}
                               onChange={(e) =>
                                 setSteps((p) =>
-                                  p.map((s) => s.id === step.id ? { ...s, compress: Math.max(0, Math.min(30, parseInt(e.target.value || "0"))) } : s)
+                                  p.map((s) =>
+                                    s.id === step.id ? { ...s, compress: Math.max(0, Math.min(30, parseInt(e.target.value || "0"))) } : s
+                                  )
                                 )
                               }
                               className="w-10 bg-gray-800 border border-gray-700 rounded px-1 text-xs"
@@ -551,17 +715,18 @@ export default function Home() {
                     <>
                       <div
                         className={`text-5xl font-bold tabular-nums ${
-                          probability === null ? "text-gray-600"
-                            : probability >= 0.8 ? "text-green-400"
-                            : probability >= 0.5 ? "text-yellow-400"
+                          probability === null
+                            ? "text-gray-600"
+                            : probability >= 0.8
+                            ? "text-green-400"
+                            : probability >= 0.5
+                            ? "text-yellow-400"
                             : "text-red-400"
                         }`}
                       >
                         {probability === null ? "—" : formatPct(probability)}
                       </div>
-                      <p className="text-xs text-gray-500 mt-1">
-                        {steps.length}手順後に1枚以上引ける確率
-                      </p>
+                      <p className="text-xs text-gray-500 mt-1">{steps.length}手順後に1枚以上引ける確率</p>
                     </>
                   )}
                 </div>
