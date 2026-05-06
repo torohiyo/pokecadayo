@@ -175,6 +175,7 @@ export default function Home() {
   // deck viewer
   const [deckViewerOpen, setDeckViewerOpen] = useState(false);
   const [drawCount, setDrawCount] = useState(1);
+  const [dvSelected, setDvSelected] = useState<Set<string>>(new Set());
 
   // deck-viewer inline probability mode
   interface DvTarget { cardId: string; minCount: number; }
@@ -238,6 +239,45 @@ export default function Home() {
     setDvProb((prev) => {
       if (!prev) return prev;
       return { ...prev, steps: [...prev.steps, { id: ++stepIdRef.current, effectKey, compress: effect.compress }] };
+    });
+  }, []);
+
+  const dvMoveSelected = useCallback((action: "trash" | "shuffle" | "top" | "bottom") => {
+    setBoard((prev) => {
+      if (dvSelected.size === 0) return prev;
+      const selected = prev.deck.filter((c) => dvSelected.has(c.instanceId));
+      const rest = prev.deck.filter((c) => !dvSelected.has(c.instanceId));
+      switch (action) {
+        case "trash":
+          return { ...prev, deck: rest, trash: [...prev.trash, ...selected.map((c) => ({ ...c, faceDown: false }))] };
+        case "shuffle":
+          return { ...prev, deck: shuffleArray(prev.deck) };
+        case "top": {
+          const toPlace = selected.length > 1 ? shuffleArray(selected) : selected;
+          return { ...prev, deck: [...rest, ...toPlace.map((c) => ({ ...c, faceDown: true }))] };
+        }
+        case "bottom": {
+          const toPlace = selected.length > 1 ? shuffleArray(selected) : selected;
+          return { ...prev, deck: [...toPlace.map((c) => ({ ...c, faceDown: true })), ...rest] };
+        }
+        default:
+          return prev;
+      }
+    });
+    setDvSelected(new Set());
+  }, [dvSelected]);
+
+  const handleDvClick = useCallback((instanceId: string, e: React.MouseEvent) => {
+    setDvSelected((prev) => {
+      const next = new Set(prev);
+      if (e.shiftKey) {
+        if (next.has(instanceId)) next.delete(instanceId);
+        else next.add(instanceId);
+      } else {
+        if (next.has(instanceId) && next.size === 1) next.clear();
+        else { next.clear(); next.add(instanceId); }
+      }
+      return next;
     });
   }, []);
 
@@ -332,6 +372,7 @@ export default function Home() {
       setBoard(b);
       setTargetIds([]);
       setSteps([]);
+      setDvSelected(new Set());
       setDeckViewerOpen(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "読み込みに失敗しました");
@@ -353,6 +394,7 @@ export default function Home() {
       return b;
     });
     setDeckViewerOpen(false);
+    setDvSelected(new Set());
   }, []);
 
   // ── Deck operations ─────────────────────────────────────────────────────────
@@ -700,7 +742,7 @@ export default function Home() {
               <div className="flex-1" />
               <span className="text-[9px] text-white/30">ダブルクリックで確率計算</span>
               <button
-                onClick={() => setDeckViewerOpen(false)}
+                onClick={() => { setDeckViewerOpen(false); setDvSelected(new Set()); }}
                 className="text-gray-500 hover:text-white text-lg leading-none ml-1"
               >
                 ×
@@ -822,20 +864,38 @@ export default function Home() {
               </div>
             )}
 
+            {/* Selection action bar */}
+            {dvSelected.size > 0 && (
+              <div className="bg-gray-900/80 border-b border-gray-700 px-3 py-2 flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-medium text-blue-400 shrink-0">{dvSelected.size}枚選択中</span>
+                <button onClick={() => dvMoveSelected("trash")} className="text-[10px] bg-gray-700 hover:bg-gray-600 text-white rounded px-2 py-1 transition-colors shrink-0">トラッシュ</button>
+                <button onClick={() => dvMoveSelected("shuffle")} className="text-[10px] bg-gray-700 hover:bg-gray-600 text-white rounded px-2 py-1 transition-colors shrink-0">山札に戻してシャッフル</button>
+                <button onClick={() => dvMoveSelected("top")} className="text-[10px] bg-blue-800 hover:bg-blue-700 text-white rounded px-2 py-1 transition-colors shrink-0">
+                  {dvSelected.size > 1 ? "シャッフルして山札の上" : "山札の上に置く"}
+                </button>
+                <button onClick={() => dvMoveSelected("bottom")} className="text-[10px] bg-purple-800 hover:bg-purple-700 text-white rounded px-2 py-1 transition-colors shrink-0">
+                  {dvSelected.size > 1 ? "シャッフルして山札の下" : "山札の下に置く"}
+                </button>
+                <button onClick={() => setDvSelected(new Set())} className="ml-auto text-[10px] text-gray-500 hover:text-gray-300 transition-colors shrink-0">選択解除</button>
+              </div>
+            )}
+
             {/* Card grid */}
-            <div className="p-3">
+            <DropZone {...dropProps("deck")} className="p-3">
               <div className="flex flex-wrap gap-1.5">
                 {board.deck.map((c, i) => {
                   const isTarget = dvProb?.targets.some((t) => t.cardId === c.cardId);
+                  const isSelected = dvSelected.has(c.instanceId);
                   return (
                     <div
                       key={c.instanceId}
                       className="flex flex-col items-center gap-0.5"
+                      onClick={(e) => handleDvClick(c.instanceId, e)}
                       onDoubleClick={() => handleDvDoubleClick(c.cardId)}
                     >
                       <div
                         className={`rounded-lg transition-all ${
-                          isTarget ? "ring-2 ring-yellow-400 scale-105" : ""
+                          isSelected ? "ring-2 ring-blue-400 scale-105" : isTarget ? "ring-2 ring-yellow-400 scale-105" : ""
                         }`}
                       >
                         <Card
@@ -854,7 +914,7 @@ export default function Home() {
                   <p className="text-gray-600 text-sm">山札にカードがありません</p>
                 )}
               </div>
-            </div>
+            </DropZone>
           </div>
         )}
       </div>
